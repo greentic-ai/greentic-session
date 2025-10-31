@@ -1,6 +1,7 @@
+use std::hint::black_box;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use greentic_session::inmemory::InMemorySessionStore;
 use greentic_session::model::{
     OutboxEntry, Session, SessionCursor, SessionId, SessionKey, SessionMeta,
