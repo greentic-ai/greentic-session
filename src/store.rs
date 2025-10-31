@@ -1,10 +1,6 @@
 use crate::model::{Cas, Session, SessionKey};
 use greentic_types::GResult;
 
-#[cfg(feature = "schema")]
-use schemars::JsonSchema;
-
-#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub trait SessionStore: Send + Sync + 'static {
     /// Fetch by key; returns `(Session, Cas)` if present.
     fn get(&self, key: &SessionKey) -> GResult<Option<(Session, Cas)>>;
