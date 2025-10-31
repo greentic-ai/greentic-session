@@ -1,18 +1,13 @@
-use greentic_types::{GResult, GreenticError};
+use greentic_types::GResult;
 
-pub use greentic_types::GreenticError;
+pub use greentic_types::{ErrorCode, GreenticError};
 pub type SessionResult<T> = GResult<T>;
 
-/// Helper extension trait for mapping backend errors into `GreenticError`.
-pub trait IntoGreenticError<T> {
-    fn into_gresult(self) -> GResult<T>;
+pub(crate) fn serde_error(err: serde_json::Error) -> GreenticError {
+    GreenticError::new(ErrorCode::Internal, err.to_string())
 }
 
-impl<T, E> IntoGreenticError<T> for Result<T, E>
-where
-    GreenticError: From<E>,
-{
-    fn into_gresult(self) -> GResult<T> {
-        self.map_err(GreenticError::from)
-    }
+#[cfg(feature = "redis")]
+pub(crate) fn redis_error(err: redis::RedisError) -> GreenticError {
+    GreenticError::new(ErrorCode::Unavailable, err.to_string())
 }

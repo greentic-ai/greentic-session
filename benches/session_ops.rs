@@ -5,6 +5,7 @@ use greentic_session::inmemory::InMemorySessionStore;
 use greentic_session::model::{
     OutboxEntry, Session, SessionCursor, SessionId, SessionKey, SessionMeta,
 };
+use greentic_session::SessionStore;
 use serde_json::Map;
 use time::OffsetDateTime;
 

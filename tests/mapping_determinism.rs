@@ -36,8 +36,8 @@ proptest! {
         let subject_key = webhook_to_session_key(&src, &alt_subject, &id);
         let src_key = webhook_to_session_key(&alt_src, &subject, &id);
 
-        prop_assert_ne!(base, id_key);
-        prop_assert_ne!(base, subject_key);
+        prop_assert_ne!(base.clone(), id_key);
+        prop_assert_ne!(base.clone(), subject_key);
         prop_assert_ne!(base, src_key);
     }
 }

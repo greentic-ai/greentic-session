@@ -2,6 +2,7 @@ use greentic_session::inmemory::InMemorySessionStore;
 use greentic_session::model::{
     OutboxEntry, Session, SessionCursor, SessionId, SessionKey, SessionMeta,
 };
+use greentic_session::SessionStore;
 use serde_json::Map;
 use std::{thread::sleep, time::Duration};
 use time::OffsetDateTime;
@@ -54,6 +55,7 @@ fn inmemory_touch_extends_ttl() {
 mod redis_ttl {
     use super::*;
     use greentic_session::redis_store::RedisSessionStore;
+    use greentic_session::SessionStore;
     use uuid::Uuid;
 
     fn redis_store() -> Option<RedisSessionStore> {

@@ -14,10 +14,11 @@ default = ["redis"]
 redis = ["dep:redis", "dep:tokio"]
 inmemory = []
 schema = ["dep:schemars"]
+interfaces = ["dep:greentic-interfaces"]
 
 [dependencies]
 greentic-types = "^0.1"
-greentic-interfaces = "^0.1"
+greentic-interfaces = { version = "^0.4", optional = true }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -42,3 +43,6 @@ criterion = { version = "0.5", features = ["async"] }
 [[bench]]
 name = "session_ops"
 harness = false
+
+[patch.crates-io]
+greentic-types = { path = "../greentic-types" }

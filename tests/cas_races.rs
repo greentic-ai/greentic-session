@@ -80,6 +80,7 @@ fn inmemory_cas_conflict_propagates_latest() {
 mod redis_cases {
     use super::*;
     use greentic_session::redis_store::RedisSessionStore;
+    use greentic_session::SessionStore;
 
     fn redis_store() -> Option<RedisSessionStore> {
         let url = std::env::var("REDIS_URL").ok()?;

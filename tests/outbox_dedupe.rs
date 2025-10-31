@@ -56,6 +56,7 @@ fn inmemory_dedupes_outbox() {
 mod redis_checks {
     use super::*;
     use greentic_session::redis_store::RedisSessionStore;
+    use greentic_session::SessionStore;
 
     fn redis_store() -> Option<RedisSessionStore> {
         let url = std::env::var("REDIS_URL").ok()?;

@@ -1,7 +1,8 @@
+use crate::error::{redis_error, serde_error};
 use crate::model::{Cas, Session, SessionKey};
 use crate::store::SessionStore;
 use greentic_types::GResult;
-use redis::{Commands, Connection, RedisResult, Script};
+use redis::{Commands, Connection, RedisResult, Script, Value};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -55,7 +56,7 @@ impl RedisSessionStore {
     }
 
     fn connection(&self) -> GResult<Connection> {
-        self.client.get_connection().map_err(Into::into)
+        self.client.get_connection().map_err(redis_error)
     }
 
     fn data_key(&self, tenant_id: &str, key: &SessionKey) -> String {
@@ -68,20 +69,20 @@ impl RedisSessionStore {
 
     fn resolve_tenant(&self, conn: &mut Connection, key: &SessionKey) -> GResult<Option<String>> {
         let lookup_key = self.lookup_key(key);
-        conn.get(&lookup_key).map_err(Into::into)
+        conn.get(&lookup_key).map_err(redis_error)
     }
 
     fn load_envelope(&self, conn: &mut Connection, key: &str) -> GResult<Option<SessionEnvelope>> {
-        let payload: Option<String> = conn.get(key).map_err(Into::into)?;
+        let payload: Option<String> = conn.get(key).map_err(redis_error)?;
         let envelope = payload
             .map(|raw| serde_json::from_str(&raw))
             .transpose()
-            .map_err(Into::into)?;
+            .map_err(serde_error)?;
         Ok(envelope)
     }
 
     fn serialize_envelope(envelope: &SessionEnvelope) -> GResult<String> {
-        serde_json::to_string(envelope).map_err(Into::into)
+        serde_json::to_string(envelope).map_err(serde_error)
     }
 
     fn ttl_arg(session: &Session) -> i64 {
@@ -95,14 +96,14 @@ impl RedisSessionStore {
         ttl_secs: u32,
     ) -> RedisResult<()> {
         if ttl_secs > 0 {
-            redis::cmd("SET")
+            let _: Value = redis::cmd("SET")
                 .arg(key)
                 .arg(payload)
                 .arg("EX")
                 .arg(ttl_secs)
                 .query(conn)?;
         } else {
-            redis::cmd("SET").arg(key).arg(payload).query(conn)?;
+            let _: Value = redis::cmd("SET").arg(key).arg(payload).query(conn)?;
         }
         Ok(())
     }
@@ -116,14 +117,14 @@ impl RedisSessionStore {
     ) -> RedisResult<()> {
         let lookup_key = self.lookup_key(key);
         if ttl_secs > 0 {
-            redis::cmd("SET")
+            let _: Value = redis::cmd("SET")
                 .arg(&lookup_key)
                 .arg(tenant_id)
                 .arg("EX")
                 .arg(ttl_secs)
                 .query(conn)?;
         } else {
-            redis::cmd("SET")
+            let _: Value = redis::cmd("SET")
                 .arg(&lookup_key)
                 .arg(tenant_id)
                 .query(conn)?;
@@ -139,19 +140,19 @@ impl RedisSessionStore {
     ) -> RedisResult<()> {
         let lookup_key = self.lookup_key(key);
         if ttl_secs > 0 {
-            redis::cmd("EXPIRE")
+            let _: i64 = redis::cmd("EXPIRE")
                 .arg(&lookup_key)
                 .arg(ttl_secs)
                 .query(conn)?;
         } else {
-            redis::cmd("PERSIST").arg(&lookup_key).query(conn)?;
+            let _: i64 = redis::cmd("PERSIST").arg(&lookup_key).query(conn)?;
         }
         Ok(())
     }
 
     fn purge_lookup(&self, conn: &mut Connection, key: &SessionKey) {
         let lookup_key = self.lookup_key(key);
-        let _: RedisResult<()> = redis::cmd("DEL").arg(&lookup_key).query(conn);
+        let _ = redis::cmd("DEL").arg(&lookup_key).query::<i64>(conn);
     }
 }
 
@@ -184,14 +185,15 @@ impl SessionStore for RedisSessionStore {
         let cas = existing_cas.unwrap_or_else(Cas::initial);
         let envelope = SessionEnvelope::new(session, cas);
         let payload = Self::serialize_envelope(&envelope)?;
-        Self::set_payload(&mut conn, &redis_key, &payload, envelope.session.ttl_secs)?;
+        Self::set_payload(&mut conn, &redis_key, &payload, envelope.session.ttl_secs)
+            .map_err(redis_error)?;
         self.sync_lookup(
             &mut conn,
             &envelope.session.key,
             &tenant_id,
             envelope.session.ttl_secs,
         )
-        .map_err(Into::into)?;
+        .map_err(redis_error)?;
         Ok(cas)
     }
 
@@ -216,7 +218,7 @@ impl SessionStore for RedisSessionStore {
             .arg(ttl)
             .arg(new_cas.value() as i64)
             .invoke(&mut conn)
-            .map_err(Into::into)?;
+            .map_err(redis_error)?;
 
         match status {
             0 => {
@@ -226,7 +228,7 @@ impl SessionStore for RedisSessionStore {
             1 => Ok(Err(Cas::from(cas_value))),
             2 => {
                 self.touch_lookup(&mut conn, &envelope.session.key, envelope.session.ttl_secs)
-                    .map_err(Into::into)?;
+                    .map_err(redis_error)?;
                 Ok(Ok(new_cas))
             }
             _ => Ok(Err(Cas::none())),
@@ -240,8 +242,8 @@ impl SessionStore for RedisSessionStore {
         };
         let redis_key = self.data_key(&tenant_id, key);
         let lookup_key = self.lookup_key(key);
-        let removed: i64 = conn.del(&redis_key).map_err(Into::into)?;
-        conn.del::<_, i64>(&lookup_key).map_err(Into::into)?;
+        let removed: i64 = conn.del(&redis_key).map_err(redis_error)?;
+        conn.del::<_, i64>(&lookup_key).map_err(redis_error)?;
         Ok(removed > 0)
     }
 
@@ -273,11 +275,11 @@ impl SessionStore for RedisSessionStore {
             .arg(ttl)
             .arg(envelope.cas)
             .invoke(&mut conn)
-            .map_err(Into::into)?;
+            .map_err(redis_error)?;
 
         if status == 2 {
             self.touch_lookup(&mut conn, key, envelope.session.ttl_secs)
-                .map_err(Into::into)?;
+                .map_err(redis_error)?;
             Ok(true)
         } else {
             if status == 0 {

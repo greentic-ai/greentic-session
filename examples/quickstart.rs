@@ -1,3 +1,4 @@
+use greentic_session::error::{ErrorCode, GreenticError};
 use greentic_session::inmemory::InMemorySessionStore;
 use greentic_session::mapping::telegram_update_to_session_key;
 use greentic_session::model::{
@@ -39,7 +40,7 @@ fn run_inmemory_demo() -> GResult<()> {
     println!("== In-memory demo ==");
     let store = InMemorySessionStore::new();
     let key = telegram_update_to_session_key("bot-9001", "chat-42", "user-1");
-    let mut session = build_session(key.clone(), "tenant-demo");
+    let session = build_session(key.clone(), "tenant-demo");
 
     let cas = store.put(session.clone())?;
     println!("Stored session with CAS {cas:?}");
@@ -82,13 +83,12 @@ fn run_redis_demo() -> GResult<()> {
         }
     };
 
-    let client = redis::Client::open(url)?;
+    let client = redis::Client::open(url).map_err(redis_unavailable)?;
     let namespace = format!("greentic:session:example:{}", Uuid::new_v4());
     let store = RedisSessionStore::with_namespace(client, namespace);
 
     let key = SessionKey(format!("redis-demo-{}", Uuid::new_v4()));
-    let mut session = build_session(key.clone(), "tenant-demo");
-    session.key = key.clone();
+    let session = build_session(key.clone(), "tenant-demo");
 
     let cas = store.put(session.clone())?;
     println!("Redis session stored with CAS {cas:?}");
@@ -119,4 +119,9 @@ fn main() -> GResult<()> {
     run_inmemory_demo()?;
     run_redis_demo()?;
     Ok(())
+}
+
+#[cfg(feature = "redis")]
+fn redis_unavailable(err: redis::RedisError) -> GreenticError {
+    GreenticError::new(ErrorCode::Unavailable, err.to_string())
 }
