@@ -22,27 +22,25 @@ greentic-interfaces = { version = "^0.4", optional = true }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-thiserror = "1"
+thiserror = "2"
 time = { version = "0.3", features = ["serde", "parsing"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 parking_lot = "0.12"
 dashmap = "6"
 tokio = { version = "1", features = ["rt-multi-thread", "time", "macros"], optional = true }
 redis = { version = "0.25", features = ["tokio-comp"], optional = true }
-schemars = { version = "0.8", optional = true }
+schemars = { version = "1", optional = true }
 tracing = "0.1"
 sha2 = "0.10"
 hex = "0.4"
+
 
 [dev-dependencies]
 proptest = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "time", "macros"] }
 serde_json = "1"
-criterion = { version = "0.5", features = ["async"] }
+criterion = { version = "0.7", features = ["async"] }
 
 [[bench]]
 name = "session_ops"
 harness = false
-
-[patch.crates-io]
-greentic-types = { path = "../greentic-types" }
