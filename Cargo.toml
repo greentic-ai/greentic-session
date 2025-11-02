@@ -1,6 +1,6 @@
 [package]
 name = "greentic-session"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 description = "Greentic multi-tenant session manager with in-memory and Redis backends"
