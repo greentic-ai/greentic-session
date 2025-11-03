@@ -57,8 +57,8 @@ fn run_inmemory_demo() -> GResult<()> {
         });
 
         match store.update_cas(updated, fetched_cas)? {
-            Ok(next) => println!("CAS update succeeded -> {:?}", next),
-            Err(conflict) => println!("CAS conflict, current token {:?}", conflict),
+            Ok(next) => println!("CAS update succeeded -> {next:?}"),
+            Err(conflict) => println!("CAS conflict, current token {conflict:?}"),
         }
     }
 
@@ -84,10 +84,12 @@ fn run_redis_demo() -> GResult<()> {
     };
 
     let client = redis::Client::open(url).map_err(redis_unavailable)?;
-    let namespace = format!("greentic:session:example:{}", Uuid::new_v4());
+    let namespace_id = Uuid::new_v4();
+    let namespace = format!("greentic:session:example:{namespace_id}");
     let store = RedisSessionStore::with_namespace(client, namespace);
 
-    let key = SessionKey(format!("redis-demo-{}", Uuid::new_v4()));
+    let key_id = Uuid::new_v4();
+    let key = SessionKey(format!("redis-demo-{key_id}"));
     let session = build_session(key.clone(), "tenant-demo");
 
     let cas = store.put(session.clone())?;
@@ -97,8 +99,8 @@ fn run_redis_demo() -> GResult<()> {
         let mut updated = fetched;
         updated.cursor.outbox_seq += 1;
         match store.update_cas(updated, fetched_cas)? {
-            Ok(next) => println!("Redis CAS update -> {:?}", next),
-            Err(conflict) => println!("Redis CAS conflict -> {:?}", conflict),
+            Ok(next) => println!("Redis CAS update -> {next:?}"),
+            Err(conflict) => println!("Redis CAS conflict -> {conflict:?}"),
         }
     }
 

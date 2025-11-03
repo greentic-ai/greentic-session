@@ -55,13 +55,14 @@ fn inmemory_dedupes_outbox() {
 #[cfg(feature = "redis")]
 mod redis_checks {
     use super::*;
-    use greentic_session::redis_store::RedisSessionStore;
     use greentic_session::SessionStore;
+    use greentic_session::redis_store::RedisSessionStore;
 
     fn redis_store() -> Option<RedisSessionStore> {
         let url = std::env::var("REDIS_URL").ok()?;
         let client = redis::Client::open(url).ok()?;
-        let namespace = format!("greentic:session:testdedupe:{}", Uuid::new_v4());
+        let namespace_id = Uuid::new_v4();
+        let namespace = format!("greentic:session:testdedupe:{namespace_id}");
         Some(RedisSessionStore::with_namespace(client, namespace))
     }
 
@@ -73,7 +74,8 @@ mod redis_checks {
         };
 
         let mut session = duplicate_session("dedupe-redis");
-        session.key = SessionKey(format!("dedupe-{}", Uuid::new_v4()));
+        let key_id = Uuid::new_v4();
+        session.key = SessionKey(format!("dedupe-{key_id}"));
         session.meta.tenant_id = "tenant-dedupe".into();
 
         let key = session.key.clone();

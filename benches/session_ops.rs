@@ -1,12 +1,12 @@
 use std::hint::black_box;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
+use greentic_session::SessionStore;
 use greentic_session::inmemory::InMemorySessionStore;
 use greentic_session::model::{
     OutboxEntry, Session, SessionCursor, SessionId, SessionKey, SessionMeta,
 };
-use greentic_session::SessionStore;
 use serde_json::Map;
 use time::OffsetDateTime;
 
@@ -46,7 +46,8 @@ fn inmemory_benches(c: &mut Criterion) {
             counter = counter.wrapping_add(1);
             session.cursor.outbox_seq = counter;
             session.outbox[0].seq = counter;
-            session.key = SessionKey(format!("bench-put-{}", counter % 16));
+            let bucket = counter % 16;
+            session.key = SessionKey(format!("bench-put-{bucket}"));
             black_box(store.put(session.clone()).expect("put"));
         });
     });

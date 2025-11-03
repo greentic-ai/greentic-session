@@ -1,8 +1,8 @@
+use greentic_session::SessionStore;
 use greentic_session::inmemory::InMemorySessionStore;
 use greentic_session::model::{
     OutboxEntry, Session, SessionCursor, SessionId, SessionKey, SessionMeta,
 };
-use greentic_session::SessionStore;
 use serde_json::Map;
 use std::{thread::sleep, time::Duration};
 use time::OffsetDateTime;
@@ -54,14 +54,15 @@ fn inmemory_touch_extends_ttl() {
 #[cfg(feature = "redis")]
 mod redis_ttl {
     use super::*;
-    use greentic_session::redis_store::RedisSessionStore;
     use greentic_session::SessionStore;
+    use greentic_session::redis_store::RedisSessionStore;
     use uuid::Uuid;
 
     fn redis_store() -> Option<RedisSessionStore> {
         let url = std::env::var("REDIS_URL").ok()?;
         let client = redis::Client::open(url).ok()?;
-        let namespace = format!("greentic:session:test:{}", Uuid::new_v4());
+        let namespace_id = Uuid::new_v4();
+        let namespace = format!("greentic:session:test:{namespace_id}");
         Some(RedisSessionStore::with_namespace(client, namespace))
     }
 
@@ -73,7 +74,8 @@ mod redis_ttl {
         };
 
         let mut session = sample_session("redis-touch", 1);
-        session.key = SessionKey(format!("redis-touch-{}", Uuid::new_v4()));
+        let key_id = Uuid::new_v4();
+        session.key = SessionKey(format!("redis-touch-{key_id}"));
         session.meta.tenant_id = "tenant-redis".into();
 
         let key = session.key.clone();

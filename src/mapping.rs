@@ -4,13 +4,13 @@ use sha2::{Digest, Sha256};
 /// Deterministic SessionKey from Telegram update fields.
 /// Inputs are strings/numbers the caller extracts from their payload.
 pub fn telegram_update_to_session_key(bot_id: &str, chat_id: &str, user_id: &str) -> SessionKey {
-    let s = format!("tg:{}:{}:{}", bot_id, chat_id, user_id);
+    let s = format!("tg:{bot_id}:{chat_id}:{user_id}");
     SessionKey(hex_sha(&s))
 }
 
 /// Deterministic SessionKey from a generic webhook (source + subject).
 pub fn webhook_to_session_key(source: &str, subject: &str, id_hint: &str) -> SessionKey {
-    let s = format!("wh:{}:{}:{}", source, subject, id_hint);
+    let s = format!("wh:{source}:{subject}:{id_hint}");
     SessionKey(hex_sha(&s))
 }
 

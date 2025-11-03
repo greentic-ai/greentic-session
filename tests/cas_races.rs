@@ -11,7 +11,7 @@ use uuid::Uuid;
 fn base_session(key_suffix: &str) -> Session {
     Session {
         id: SessionId::new(),
-        key: SessionKey(format!("cas-{}", key_suffix)),
+        key: SessionKey(format!("cas-{key_suffix}")),
         cursor: SessionCursor {
             flow_id: "flow".into(),
             node_id: "node".into(),
@@ -79,13 +79,14 @@ fn inmemory_cas_conflict_propagates_latest() {
 #[cfg(feature = "redis")]
 mod redis_cases {
     use super::*;
-    use greentic_session::redis_store::RedisSessionStore;
     use greentic_session::SessionStore;
+    use greentic_session::redis_store::RedisSessionStore;
 
     fn redis_store() -> Option<RedisSessionStore> {
         let url = std::env::var("REDIS_URL").ok()?;
         let client = redis::Client::open(url).ok()?;
-        let namespace = format!("greentic:session:testcas:{}", Uuid::new_v4());
+        let namespace_id = Uuid::new_v4();
+        let namespace = format!("greentic:session:testcas:{namespace_id}");
         Some(RedisSessionStore::with_namespace(client, namespace))
     }
 
@@ -97,7 +98,8 @@ mod redis_cases {
         };
 
         let mut session = base_session("redis");
-        session.key = SessionKey(format!("cas-{}", Uuid::new_v4()));
+        let key_id = Uuid::new_v4();
+        session.key = SessionKey(format!("cas-{key_id}"));
         session.meta.tenant_id = "tenant-cas".into();
 
         let key = session.key.clone();
