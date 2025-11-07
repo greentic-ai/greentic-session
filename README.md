@@ -122,3 +122,25 @@ export REDIS_URL=redis://localhost:6379
 - The publish workflow lints, builds, and tests the full workspace (all features) before invoking `katyo/publish-crates@v2`.
 - Publishing is idempotent: if a crate version is already on crates.io, the workflow succeeds without re-uploading.
 - Configure the `CARGO_REGISTRY_TOKEN` secret with a crates.io publish token to enable automated releases.
+
+## Local CI checks
+
+Run the aggregated checks before pushing:
+
+```bash
+ci/local_check.sh
+```
+
+Useful toggles:
+
+- `LOCAL_CHECK_ONLINE=1` - enable network-reliant steps (publish parity).
+- `LOCAL_CHECK_STRICT=1` - fail when optional tooling/files are missing instead of skipping.
+- `LOCAL_CHECK_VERBOSE=1` - echo every command (helps when debugging failures).
+
+Example:
+
+```bash
+LOCAL_CHECK_ONLINE=1 LOCAL_CHECK_STRICT=1 ci/local_check.sh
+```
+
+The script mirrors the GitHub Actions workflows (`fmt`, `clippy`, `build`, `test`, and publish packaging checks) while offline by default, so you can reproduce CI locally with predictable output.
