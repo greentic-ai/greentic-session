@@ -502,7 +502,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "638378c4256f585ae53c8d07fc8e9e0f663aa9a82d39a82990992d3acb7e7ba8"
 dependencies = [
  "anyhow",
- "greentic-types 0.3.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "greentic-types",
  "semver",
  "thiserror",
  "time",
@@ -517,7 +517,7 @@ name = "greentic-session"
 version = "0.3.2"
 dependencies = [
  "greentic-interfaces",
- "greentic-types 0.3.1",
+ "greentic-types",
  "hex",
  "parking_lot",
  "proptest",
@@ -526,17 +526,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "uuid",
-]
-
-[[package]]
-name = "greentic-types"
-version = "0.3.1"
-dependencies = [
- "semver",
- "serde",
- "serde_with",
- "thiserror",
- "time",
 ]
 
 [[package]]
