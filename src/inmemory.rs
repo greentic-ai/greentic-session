@@ -1,180 +1,150 @@
-use crate::model::{Cas, Session, SessionKey};
+use crate::error::{invalid_argument, not_found};
 use crate::store::SessionStore;
-use dashmap::DashMap;
-use greentic_types::GResult;
-use parking_lot::Mutex;
-use time::{Duration, OffsetDateTime};
+use greentic_types::{
+    EnvId, GResult, SessionData, SessionKey, TeamId, TenantCtx, TenantId, UserId,
+};
+use parking_lot::RwLock;
+use std::collections::HashMap;
+use uuid::Uuid;
 
-struct Entry {
-    session: Session,
-    cas: Cas,
-    expires_at: Option<OffsetDateTime>,
-}
-
-impl Entry {
-    fn new(session: Session, cas: Cas) -> Self {
-        let expires_at = session.expires_at();
-        Self {
-            session,
-            cas,
-            expires_at,
-        }
-    }
-
-    fn is_expired(&self, now: OffsetDateTime) -> bool {
-        match self.expires_at {
-            Some(exp) => now >= exp,
-            None => false,
-        }
-    }
-}
-
-/// In-memory implementation backed by a concurrent hash map.
+/// Simple in-memory implementation backed by hash maps.
 pub struct InMemorySessionStore {
-    entries: DashMap<SessionKey, Entry>,
-    cleanup_hint: Mutex<OffsetDateTime>,
+    sessions: RwLock<HashMap<SessionKey, SessionData>>,
+    user_index: RwLock<HashMap<UserLookupKey, SessionKey>>,
 }
 
 impl Default for InMemorySessionStore {
     fn default() -> Self {
-        Self {
-            entries: DashMap::new(),
-            cleanup_hint: Mutex::new(OffsetDateTime::now_utc()),
-        }
+        Self::new()
     }
 }
 
 impl InMemorySessionStore {
-    /// Constructs a store with no background maintenance. Expiration is handled lazily on access.
+    /// Constructs an empty store.
     pub fn new() -> Self {
-        Self::default()
-    }
-
-    fn now() -> OffsetDateTime {
-        OffsetDateTime::now_utc()
-    }
-
-    fn sanitize_for_write(session: &mut Session, now: OffsetDateTime) {
-        session.updated_at = now;
-        session.normalize();
-    }
-
-    fn maybe_cleanup(&self, now: OffsetDateTime) {
-        let mut guard = self.cleanup_hint.lock();
-        if now - *guard < Duration::seconds(60) {
-            return;
+        Self {
+            sessions: RwLock::new(HashMap::new()),
+            user_index: RwLock::new(HashMap::new()),
         }
+    }
 
-        let stale_keys: Vec<_> = self
-            .entries
-            .iter()
-            .filter_map(|entry| {
-                if entry.value().is_expired(now) {
-                    Some(entry.key().clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
+    fn next_key() -> SessionKey {
+        SessionKey::new(Uuid::new_v4().to_string())
+    }
 
-        for key in stale_keys {
-            self.entries.remove(&key);
+    fn ensure_alignment(ctx: &TenantCtx, data: &SessionData) -> GResult<()> {
+        if ctx.env != data.tenant_ctx.env || ctx.tenant_id != data.tenant_ctx.tenant_id {
+            return Err(invalid_argument(
+                "session data tenant context does not match provided TenantCtx",
+            ));
         }
+        Ok(())
+    }
 
-        *guard = now;
+    fn lookup_from_ctx(ctx: &TenantCtx) -> Option<UserLookupKey> {
+        let user = ctx.user_id.clone().or_else(|| ctx.user.clone())?;
+        Some(UserLookupKey::from_ctx(ctx, &user))
+    }
+
+    fn lookup_from_data(data: &SessionData) -> Option<UserLookupKey> {
+        let user = data
+            .tenant_ctx
+            .user_id
+            .clone()
+            .or_else(|| data.tenant_ctx.user.clone())?;
+        Some(UserLookupKey::from_ctx(&data.tenant_ctx, &user))
+    }
+
+    fn record_user_mapping(
+        &self,
+        ctx_hint: Option<&TenantCtx>,
+        data: &SessionData,
+        key: &SessionKey,
+    ) {
+        let lookup =
+            Self::lookup_from_data(data).or_else(|| ctx_hint.and_then(Self::lookup_from_ctx));
+        if let Some(entry) = lookup {
+            self.user_index.write().insert(entry, key.clone());
+        }
+    }
+
+    fn purge_user_mapping(&self, data: &SessionData, key: &SessionKey) {
+        if let Some(entry) = Self::lookup_from_data(data) {
+            let mut guard = self.user_index.write();
+            if guard
+                .get(&entry)
+                .map(|existing| existing == key)
+                .unwrap_or(false)
+            {
+                guard.remove(&entry);
+            }
+        }
     }
 }
 
 impl SessionStore for InMemorySessionStore {
-    fn get(&self, key: &SessionKey) -> GResult<Option<(Session, Cas)>> {
-        let now = Self::now();
-        self.maybe_cleanup(now);
-        if let Some(entry) = self.entries.get(key) {
-            if entry.is_expired(now) {
-                drop(entry);
-                self.entries.remove(key);
-                return Ok(None);
+    fn create_session(&self, ctx: &TenantCtx, data: SessionData) -> GResult<SessionKey> {
+        Self::ensure_alignment(ctx, &data)?;
+        let key = Self::next_key();
+        self.sessions.write().insert(key.clone(), data.clone());
+        self.record_user_mapping(Some(ctx), &data, &key);
+        Ok(key)
+    }
+
+    fn get_session(&self, key: &SessionKey) -> GResult<Option<SessionData>> {
+        Ok(self.sessions.read().get(key).cloned())
+    }
+
+    fn update_session(&self, key: &SessionKey, data: SessionData) -> GResult<()> {
+        let previous = self.sessions.write().insert(key.clone(), data.clone());
+        let Some(old) = previous else {
+            return Err(not_found(key));
+        };
+        self.purge_user_mapping(&old, key);
+        self.record_user_mapping(None, &data, key);
+        Ok(())
+    }
+
+    fn remove_session(&self, key: &SessionKey) -> GResult<()> {
+        if let Some(old) = self.sessions.write().remove(key) {
+            self.purge_user_mapping(&old, key);
+            Ok(())
+        } else {
+            Err(not_found(key))
+        }
+    }
+
+    fn find_by_user(
+        &self,
+        ctx: &TenantCtx,
+        user: &UserId,
+    ) -> GResult<Option<(SessionKey, SessionData)>> {
+        let lookup = UserLookupKey::from_ctx(ctx, user);
+        if let Some(stored_key) = self.user_index.read().get(&lookup).cloned() {
+            if let Some(data) = self.sessions.read().get(&stored_key).cloned() {
+                return Ok(Some((stored_key, data)));
             }
-            return Ok(Some((entry.session.clone(), entry.cas)));
+            self.user_index.write().remove(&lookup);
         }
         Ok(None)
     }
+}
 
-    fn put(&self, mut session: Session) -> GResult<Cas> {
-        let key = session.key.clone();
-        let now = Self::now();
-        self.maybe_cleanup(now);
-        if let Some(existing) = self.entries.get(&key) {
-            if existing.is_expired(now) {
-                drop(existing);
-                self.entries.remove(&key);
-            }
+#[derive(Clone, Eq, PartialEq, Hash)]
+struct UserLookupKey {
+    env: EnvId,
+    tenant: TenantId,
+    team: Option<TeamId>,
+    user: UserId,
+}
+
+impl UserLookupKey {
+    fn from_ctx(ctx: &TenantCtx, user: &UserId) -> Self {
+        Self {
+            env: ctx.env.clone(),
+            tenant: ctx.tenant_id.clone(),
+            team: ctx.team_id.clone().or_else(|| ctx.team.clone()),
+            user: user.clone(),
         }
-
-        Self::sanitize_for_write(&mut session, now);
-
-        let mut cas = Cas::initial();
-        match self.entries.entry(key) {
-            dashmap::mapref::entry::Entry::Occupied(mut occ) => {
-                cas = occ.get().cas.next();
-                occ.insert(Entry::new(session, cas));
-            }
-            dashmap::mapref::entry::Entry::Vacant(vac) => {
-                vac.insert(Entry::new(session, cas));
-            }
-        }
-        Ok(cas)
-    }
-
-    fn update_cas(&self, mut session: Session, expected: Cas) -> GResult<Result<Cas, Cas>> {
-        let key = session.key.clone();
-        let now = Self::now();
-        self.maybe_cleanup(now);
-        Self::sanitize_for_write(&mut session, now);
-
-        if let Some(mut guard) = self.entries.get_mut(&key) {
-            if guard.is_expired(now) {
-                drop(guard);
-                self.entries.remove(&key);
-                return Ok(Err(Cas::none()));
-            }
-
-            let current = guard.cas;
-            if current != expected {
-                return Ok(Err(current));
-            }
-
-            let next = current.next();
-            guard.cas = next;
-            guard.session = session;
-            guard.expires_at = guard.session.expires_at();
-            return Ok(Ok(next));
-        }
-        Ok(Err(Cas::none()))
-    }
-
-    fn delete(&self, key: &SessionKey) -> GResult<bool> {
-        Ok(self.entries.remove(key).is_some())
-    }
-
-    fn touch(&self, key: &SessionKey, ttl_secs: Option<u32>) -> GResult<bool> {
-        let now = Self::now();
-        self.maybe_cleanup(now);
-        if let Some(mut guard) = self.entries.get_mut(key) {
-            if guard.is_expired(now) {
-                drop(guard);
-                self.entries.remove(key);
-                return Ok(false);
-            }
-
-            if let Some(ttl) = ttl_secs {
-                guard.session.ttl_secs = ttl;
-            }
-            guard.session.updated_at = now;
-            guard.session.normalize();
-            guard.expires_at = guard.session.expires_at();
-            return Ok(true);
-        }
-        Ok(false)
     }
 }

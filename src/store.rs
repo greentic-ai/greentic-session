@@ -1,19 +1,27 @@
-use crate::model::{Cas, Session, SessionKey};
-use greentic_types::GResult;
+use greentic_types::{GResult, SessionData, SessionKey, TenantCtx, UserId};
 
+/// Persistent session storage interface used by Greentic runtimes.
+///
+/// `SessionData` captures the tenant context, flow identifier, cursor, and serialized execution
+/// state snapshot for an in-flight flow. Implementations store that payload so runners can pause
+/// execution, persist the snapshot, and resume the flow consistently after new input arrives.
 pub trait SessionStore: Send + Sync + 'static {
-    /// Fetch by key; returns `(Session, Cas)` if present.
-    fn get(&self, key: &SessionKey) -> GResult<Option<(Session, Cas)>>;
+    /// Creates a new session associated with the supplied tenant context and returns its key.
+    fn create_session(&self, ctx: &TenantCtx, data: SessionData) -> GResult<SessionKey>;
 
-    /// Create or replace, returning the new `Cas`.
-    fn put(&self, session: Session) -> GResult<Cas>;
+    /// Fetches the session payload for the provided key, if it exists.
+    fn get_session(&self, key: &SessionKey) -> GResult<Option<SessionData>>;
 
-    /// Update using CAS—only writes if `expected` matches the stored Cas.
-    fn update_cas(&self, session: Session, expected: Cas) -> GResult<Result<Cas, Cas>>;
+    /// Replaces the session payload for the provided key.
+    fn update_session(&self, key: &SessionKey, data: SessionData) -> GResult<()>;
 
-    /// Delete by key; return true if something was deleted.
-    fn delete(&self, key: &SessionKey) -> GResult<bool>;
+    /// Removes the session entry and clears any lookup indices.
+    fn remove_session(&self, key: &SessionKey) -> GResult<()>;
 
-    /// Refresh TTL or `updated_at` without modifying payload.
-    fn touch(&self, key: &SessionKey, ttl_secs: Option<u32>) -> GResult<bool>;
+    /// Finds the active session bound to the specified tenant + user combination.
+    fn find_by_user(
+        &self,
+        ctx: &TenantCtx,
+        user: &UserId,
+    ) -> GResult<Option<(SessionKey, SessionData)>>;
 }

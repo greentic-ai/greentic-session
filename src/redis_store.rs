@@ -1,43 +1,15 @@
-use crate::error::{redis_error, serde_error};
-use crate::model::{Cas, Session, SessionKey};
+use crate::error::{invalid_argument, not_found, redis_error, serde_error};
 use crate::store::SessionStore;
-use greentic_types::GResult;
-use redis::{Commands, Connection, RedisResult, Script, Value};
-use serde::{Deserialize, Serialize};
-use time::OffsetDateTime;
+use greentic_types::{GResult, SessionData, SessionKey, TenantCtx, UserId};
+use redis::{Commands, Connection};
+use uuid::Uuid;
 
 const DEFAULT_NAMESPACE: &str = "greentic:session";
-const LOOKUP_SEGMENT: &str = "lookup";
 
-static UPDATE_LUA: &str = r#"
-local key = KEYS[1]
-local expected = tonumber(ARGV[1])
-local payload = ARGV[2]
-local ttl = tonumber(ARGV[3])
-local new_cas = tonumber(ARGV[4])
-local existing = redis.call("GET", key)
-if not existing then
-  return {0, 0}
-end
-local doc = cjson.decode(existing)
-local current = tonumber(doc.cas or 0)
-if current ~= expected then
-  return {1, current or 0}
-end
-redis.call("SET", key, payload)
-if ttl and ttl > 0 then
-  redis.call("EXPIRE", key, ttl)
-else
-  redis.call("PERSIST", key)
-end
-return {2, new_cas}
-"#;
-
-#[derive(Clone)]
+/// Redis-backed session store that mirrors the in-memory semantics.
 pub struct RedisSessionStore {
     client: redis::Client,
     namespace: String,
-    update_script: Script,
 }
 
 impl RedisSessionStore {
@@ -51,257 +23,171 @@ impl RedisSessionStore {
         Self {
             client,
             namespace: namespace.into(),
-            update_script: Script::new(UPDATE_LUA),
         }
     }
 
-    fn connection(&self) -> GResult<Connection> {
+    fn conn(&self) -> GResult<Connection> {
         self.client.get_connection().map_err(redis_error)
     }
 
-    fn data_key(&self, tenant_id: &str, key: &SessionKey) -> String {
-        format!("{}:{}:{}", self.namespace, tenant_id, key.as_str())
+    fn session_entry_key(&self, key: &SessionKey) -> String {
+        format!("{}:session:{}", self.namespace, key.as_str())
     }
 
-    fn lookup_key(&self, key: &SessionKey) -> String {
-        format!("{}:{}:{}", self.namespace, LOOKUP_SEGMENT, key.as_str())
+    fn user_lookup_key(&self, ctx: &TenantCtx, user: &UserId) -> String {
+        let team = ctx
+            .team_id
+            .as_ref()
+            .or(ctx.team.as_ref())
+            .map(|v| v.as_str())
+            .unwrap_or("-");
+        format!(
+            "{}:user:{}:{}:{}:{}",
+            self.namespace,
+            ctx.env.as_str(),
+            ctx.tenant_id.as_str(),
+            team,
+            user.as_str()
+        )
     }
 
-    fn resolve_tenant(&self, conn: &mut Connection, key: &SessionKey) -> GResult<Option<String>> {
-        let lookup_key = self.lookup_key(key);
-        conn.get(&lookup_key).map_err(redis_error)
-    }
-
-    fn load_envelope(&self, conn: &mut Connection, key: &str) -> GResult<Option<SessionEnvelope>> {
-        let payload: Option<String> = conn.get(key).map_err(redis_error)?;
-        let envelope = payload
-            .map(|raw| serde_json::from_str(&raw))
-            .transpose()
-            .map_err(serde_error)?;
-        Ok(envelope)
-    }
-
-    fn serialize_envelope(envelope: &SessionEnvelope) -> GResult<String> {
-        serde_json::to_string(envelope).map_err(serde_error)
-    }
-
-    fn ttl_arg(session: &Session) -> i64 {
-        i64::from(session.ttl_secs)
-    }
-
-    fn set_payload(
-        conn: &mut Connection,
-        key: &str,
-        payload: &str,
-        ttl_secs: u32,
-    ) -> RedisResult<()> {
-        if ttl_secs > 0 {
-            let _: Value = redis::cmd("SET")
-                .arg(key)
-                .arg(payload)
-                .arg("EX")
-                .arg(ttl_secs)
-                .query(conn)?;
-        } else {
-            let _: Value = redis::cmd("SET").arg(key).arg(payload).query(conn)?;
+    fn ensure_alignment(ctx: &TenantCtx, data: &SessionData) -> GResult<()> {
+        if ctx.env != data.tenant_ctx.env || ctx.tenant_id != data.tenant_ctx.tenant_id {
+            return Err(invalid_argument(
+                "session data tenant context does not match provided TenantCtx",
+            ));
         }
         Ok(())
     }
 
-    fn sync_lookup(
+    fn serialize(data: &SessionData) -> GResult<String> {
+        serde_json::to_string(data).map_err(serde_error)
+    }
+
+    fn deserialize(payload: String) -> GResult<SessionData> {
+        serde_json::from_str(&payload).map_err(serde_error)
+    }
+
+    fn mapping_sources<'a>(
+        ctx_hint: Option<&'a TenantCtx>,
+        data: &'a SessionData,
+    ) -> Option<(&'a TenantCtx, UserId)> {
+        if let Some(user) = data
+            .tenant_ctx
+            .user_id
+            .clone()
+            .or_else(|| data.tenant_ctx.user.clone())
+        {
+            Some((&data.tenant_ctx, user))
+        } else {
+            ctx_hint.and_then(|ctx| {
+                ctx.user_id
+                    .clone()
+                    .or_else(|| ctx.user.clone())
+                    .map(|user| (ctx, user))
+            })
+        }
+    }
+
+    fn store_user_mapping(
         &self,
         conn: &mut Connection,
+        ctx_hint: Option<&TenantCtx>,
+        data: &SessionData,
         key: &SessionKey,
-        tenant_id: &str,
-        ttl_secs: u32,
-    ) -> RedisResult<()> {
-        let lookup_key = self.lookup_key(key);
-        if ttl_secs > 0 {
-            let _: Value = redis::cmd("SET")
-                .arg(&lookup_key)
-                .arg(tenant_id)
-                .arg("EX")
-                .arg(ttl_secs)
-                .query(conn)?;
-        } else {
-            let _: Value = redis::cmd("SET")
-                .arg(&lookup_key)
-                .arg(tenant_id)
-                .query(conn)?;
+    ) -> GResult<()> {
+        if let Some((ctx, user)) = Self::mapping_sources(ctx_hint, data) {
+            let lookup_key = self.user_lookup_key(ctx, &user);
+            conn.set::<_, _, ()>(lookup_key, key.as_str())
+                .map_err(redis_error)?;
         }
         Ok(())
     }
 
-    fn touch_lookup(
+    fn remove_user_mapping(
         &self,
         conn: &mut Connection,
+        data: &SessionData,
         key: &SessionKey,
-        ttl_secs: u32,
-    ) -> RedisResult<()> {
-        let lookup_key = self.lookup_key(key);
-        if ttl_secs > 0 {
-            let _: i64 = redis::cmd("EXPIRE")
-                .arg(&lookup_key)
-                .arg(ttl_secs)
-                .query(conn)?;
-        } else {
-            let _: i64 = redis::cmd("PERSIST").arg(&lookup_key).query(conn)?;
+    ) -> GResult<()> {
+        if let Some((ctx, user)) = Self::mapping_sources(None, data) {
+            let lookup_key = self.user_lookup_key(ctx, &user);
+            let stored: Option<String> = conn.get(&lookup_key).map_err(redis_error)?;
+            if stored
+                .as_deref()
+                .map(|value| value == key.as_str())
+                .unwrap_or(false)
+            {
+                let _: () = conn.del(lookup_key).map_err(redis_error)?;
+            }
         }
         Ok(())
-    }
-
-    fn purge_lookup(&self, conn: &mut Connection, key: &SessionKey) {
-        let lookup_key = self.lookup_key(key);
-        let _ = redis::cmd("DEL").arg(&lookup_key).query::<i64>(conn);
     }
 }
 
 impl SessionStore for RedisSessionStore {
-    fn get(&self, key: &SessionKey) -> GResult<Option<(Session, Cas)>> {
-        let mut conn = self.connection()?;
-        let Some(tenant_id) = self.resolve_tenant(&mut conn, key)? else {
+    fn create_session(&self, ctx: &TenantCtx, data: SessionData) -> GResult<SessionKey> {
+        Self::ensure_alignment(ctx, &data)?;
+        let key = SessionKey::new(Uuid::new_v4().to_string());
+        let payload = Self::serialize(&data)?;
+        let mut conn = self.conn()?;
+        conn.set::<_, _, ()>(self.session_entry_key(&key), payload)
+            .map_err(redis_error)?;
+        self.store_user_mapping(&mut conn, Some(ctx), &data, &key)?;
+        Ok(key)
+    }
+
+    fn get_session(&self, key: &SessionKey) -> GResult<Option<SessionData>> {
+        let mut conn = self.conn()?;
+        let payload: Option<String> = conn.get(self.session_entry_key(key)).map_err(redis_error)?;
+        payload.map(Self::deserialize).transpose()
+    }
+
+    fn update_session(&self, key: &SessionKey, data: SessionData) -> GResult<()> {
+        let mut conn = self.conn()?;
+        let entry_key = self.session_entry_key(key);
+        let existing: Option<String> = conn.get(&entry_key).map_err(redis_error)?;
+        let Some(existing_payload) = existing else {
+            return Err(not_found(key));
+        };
+        let previous = Self::deserialize(existing_payload)?;
+        let payload = Self::serialize(&data)?;
+        conn.set::<_, _, ()>(&entry_key, payload)
+            .map_err(redis_error)?;
+        self.remove_user_mapping(&mut conn, &previous, key)?;
+        self.store_user_mapping(&mut conn, None, &data, key)
+    }
+
+    fn remove_session(&self, key: &SessionKey) -> GResult<()> {
+        let mut conn = self.conn()?;
+        let entry_key = self.session_entry_key(key);
+        let existing: Option<String> = conn.get(&entry_key).map_err(redis_error)?;
+        let Some(payload) = existing else {
+            return Err(not_found(key));
+        };
+        let data = Self::deserialize(payload)?;
+        let _: () = conn.del(entry_key).map_err(redis_error)?;
+        self.remove_user_mapping(&mut conn, &data, key)
+    }
+
+    fn find_by_user(
+        &self,
+        ctx: &TenantCtx,
+        user: &UserId,
+    ) -> GResult<Option<(SessionKey, SessionData)>> {
+        let mut conn = self.conn()?;
+        let lookup_key = self.user_lookup_key(ctx, user);
+        let stored: Option<String> = conn.get(&lookup_key).map_err(redis_error)?;
+        let Some(raw_key) = stored else {
             return Ok(None);
         };
-        let redis_key = self.data_key(&tenant_id, key);
-        if let Some(envelope) = self.load_envelope(&mut conn, &redis_key)? {
-            return Ok(Some((envelope.session, Cas::from(envelope.cas))));
-        } else {
-            self.purge_lookup(&mut conn, key);
-        }
-        Ok(None)
-    }
-
-    fn put(&self, mut session: Session) -> GResult<Cas> {
-        let mut conn = self.connection()?;
-        let tenant_id = session.tenant_id().to_owned();
-        let redis_key = self.data_key(&tenant_id, &session.key);
-        let now = OffsetDateTime::now_utc();
-        session.updated_at = now;
-        session.normalize();
-
-        let existing_cas = self
-            .load_envelope(&mut conn, &redis_key)?
-            .map(|envelope| Cas::from(envelope.cas).next());
-        let cas = existing_cas.unwrap_or_else(Cas::initial);
-        let envelope = SessionEnvelope::new(session, cas);
-        let payload = Self::serialize_envelope(&envelope)?;
-        Self::set_payload(&mut conn, &redis_key, &payload, envelope.session.ttl_secs)
-            .map_err(redis_error)?;
-        self.sync_lookup(
-            &mut conn,
-            &envelope.session.key,
-            &tenant_id,
-            envelope.session.ttl_secs,
-        )
-        .map_err(redis_error)?;
-        Ok(cas)
-    }
-
-    fn update_cas(&self, mut session: Session, expected: Cas) -> GResult<Result<Cas, Cas>> {
-        let mut conn = self.connection()?;
-        let tenant_id = session.tenant_id().to_owned();
-        let redis_key = self.data_key(&tenant_id, &session.key);
-        let now = OffsetDateTime::now_utc();
-        session.updated_at = now;
-        session.normalize();
-
-        let new_cas = expected.next();
-        let envelope = SessionEnvelope::new(session, new_cas);
-        let payload = Self::serialize_envelope(&envelope)?;
-        let ttl = Self::ttl_arg(&envelope.session);
-
-        let (status, cas_value): (i64, u64) = self
-            .update_script
-            .key(redis_key.clone())
-            .arg(expected.value() as i64)
-            .arg(payload)
-            .arg(ttl)
-            .arg(new_cas.value() as i64)
-            .invoke(&mut conn)
-            .map_err(redis_error)?;
-
-        match status {
-            0 => {
-                self.purge_lookup(&mut conn, &envelope.session.key);
-                Ok(Err(Cas::none()))
+        let session_key = SessionKey::new(raw_key);
+        match self.get_session(&session_key)? {
+            Some(data) => Ok(Some((session_key, data))),
+            None => {
+                let _: () = conn.del(&lookup_key).map_err(redis_error)?;
+                Ok(None)
             }
-            1 => Ok(Err(Cas::from(cas_value))),
-            2 => {
-                self.touch_lookup(&mut conn, &envelope.session.key, envelope.session.ttl_secs)
-                    .map_err(redis_error)?;
-                Ok(Ok(new_cas))
-            }
-            _ => Ok(Err(Cas::none())),
-        }
-    }
-
-    fn delete(&self, key: &SessionKey) -> GResult<bool> {
-        let mut conn = self.connection()?;
-        let Some(tenant_id) = self.resolve_tenant(&mut conn, key)? else {
-            return Ok(false);
-        };
-        let redis_key = self.data_key(&tenant_id, key);
-        let lookup_key = self.lookup_key(key);
-        let removed: i64 = conn.del(&redis_key).map_err(redis_error)?;
-        conn.del::<_, i64>(&lookup_key).map_err(redis_error)?;
-        Ok(removed > 0)
-    }
-
-    fn touch(&self, key: &SessionKey, ttl_secs: Option<u32>) -> GResult<bool> {
-        let mut conn = self.connection()?;
-        let Some(tenant_id) = self.resolve_tenant(&mut conn, key)? else {
-            return Ok(false);
-        };
-        let redis_key = self.data_key(&tenant_id, key);
-        let Some(mut envelope) = self.load_envelope(&mut conn, &redis_key)? else {
-            self.purge_lookup(&mut conn, key);
-            return Ok(false);
-        };
-
-        let now = OffsetDateTime::now_utc();
-        envelope.session.updated_at = now;
-        if let Some(ttl) = ttl_secs {
-            envelope.session.ttl_secs = ttl;
-        }
-
-        let payload = Self::serialize_envelope(&envelope)?;
-        let ttl = Self::ttl_arg(&envelope.session);
-
-        let (status, _): (i64, u64) = self
-            .update_script
-            .key(redis_key.clone())
-            .arg(envelope.cas)
-            .arg(payload)
-            .arg(ttl)
-            .arg(envelope.cas)
-            .invoke(&mut conn)
-            .map_err(redis_error)?;
-
-        if status == 2 {
-            self.touch_lookup(&mut conn, key, envelope.session.ttl_secs)
-                .map_err(redis_error)?;
-            Ok(true)
-        } else {
-            if status == 0 {
-                self.purge_lookup(&mut conn, key);
-            }
-            Ok(false)
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-struct SessionEnvelope {
-    cas: u64,
-    session: Session,
-}
-
-impl SessionEnvelope {
-    fn new(mut session: Session, cas: Cas) -> Self {
-        session.normalize();
-        Self {
-            cas: cas.value(),
-            session,
         }
     }
 }

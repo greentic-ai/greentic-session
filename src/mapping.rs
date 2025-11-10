@@ -1,4 +1,4 @@
-use crate::model::SessionKey;
+use greentic_types::SessionKey;
 use sha2::{Digest, Sha256};
 
 /// Deterministic SessionKey from Telegram update fields.

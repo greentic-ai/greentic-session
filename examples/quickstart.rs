@@ -1,129 +1,60 @@
 use greentic_session::error::{ErrorCode, GreenticError};
 use greentic_session::inmemory::InMemorySessionStore;
-use greentic_session::mapping::telegram_update_to_session_key;
-use greentic_session::model::{
-    OutboxEntry, Session, SessionCursor, SessionId, SessionKey, SessionMeta,
-};
 use greentic_session::store::SessionStore;
-use greentic_types::GResult;
-use serde_json::Map;
-use time::OffsetDateTime;
-use uuid::Uuid;
+use greentic_types::{
+    EnvId, FlowId, GResult, SessionCursor, SessionData, TenantCtx, TenantId, UserId,
+};
 
-fn build_session(key: SessionKey, tenant: &str) -> Session {
-    Session {
-        id: SessionId::new(),
-        key,
-        cursor: SessionCursor {
-            flow_id: "onboarding".into(),
-            node_id: "welcome-step".into(),
-            wait_reason: Some("awaiting_input".into()),
-            outbox_seq: 0,
-        },
-        meta: SessionMeta {
-            tenant_id: tenant.into(),
-            team_id: Some("team-alpha".into()),
-            user_id: Some("user-123".into()),
-            labels: Map::new(),
-        },
-        outbox: vec![OutboxEntry {
-            seq: 1,
-            payload_sha256: [0; 32],
-            created_at: OffsetDateTime::now_utc(),
-        }],
-        updated_at: OffsetDateTime::now_utc(),
-        ttl_secs: 60,
+fn build_ctx(user: &str) -> TenantCtx {
+    let env = EnvId::try_from("dev").expect("env");
+    let tenant = TenantId::try_from("tenant-demo").expect("tenant");
+    let user_id = UserId::try_from(user).expect("user id");
+    TenantCtx::new(env, tenant).with_user(Some(user_id))
+}
+
+fn build_session(ctx: &TenantCtx, cursor: &str, context_json: &str) -> SessionData {
+    SessionData {
+        tenant_ctx: ctx.clone(),
+        flow_id: FlowId::try_from("onboarding.flow").expect("flow"),
+        cursor: SessionCursor::new(cursor.to_string()),
+        context_json: context_json.to_string(),
     }
 }
 
 fn run_inmemory_demo() -> GResult<()> {
-    println!("== In-memory demo ==");
+    println!("== In-memory session demo ==");
     let store = InMemorySessionStore::new();
-    let key = telegram_update_to_session_key("bot-9001", "chat-42", "user-1");
-    let session = build_session(key.clone(), "tenant-demo");
+    let ctx = build_ctx("user-123");
+    let session = build_session(&ctx, "node.start", "{\"step\":1}");
 
-    let cas = store.put(session.clone())?;
-    println!("Stored session with CAS {cas:?}");
+    let key = store.create_session(&ctx, session.clone())?;
+    println!("Created session {}", key.as_str());
 
-    if let Some((fetched, fetched_cas)) = store.get(&key)? {
-        println!("Fetched session cursor @ {}", fetched.cursor.node_id);
-
-        let mut updated = fetched;
-        updated.cursor.outbox_seq += 1;
-        updated.outbox.push(OutboxEntry {
-            seq: updated.cursor.outbox_seq,
-            payload_sha256: [1; 32],
-            created_at: OffsetDateTime::now_utc(),
-        });
-
-        match store.update_cas(updated, fetched_cas)? {
-            Ok(next) => println!("CAS update succeeded -> {next:?}"),
-            Err(conflict) => println!("CAS conflict, current token {conflict:?}"),
-        }
+    if let Some(data) = store.get_session(&key)? {
+        println!("Loaded context payload: {}", data.context_json);
     }
 
-    store.touch(&key, Some(120))?;
-    println!("TTL extended via touch");
+    if let Some((_key, data)) = store.find_by_user(&ctx, ctx.user_id.as_ref().unwrap())? {
+        println!(
+            "User lookup found cursor {}",
+            data.cursor.node_pointer.as_str()
+        );
+    }
 
-    store.delete(&key)?;
+    let updated = build_session(&ctx, "node.wait_input", "{\"step\":2}");
+    store.update_session(&key, updated)?;
+    println!("Session updated");
+
+    store.remove_session(&key)?;
     println!("Session removed");
-
-    Ok(())
-}
-
-#[cfg(feature = "redis")]
-fn run_redis_demo() -> GResult<()> {
-    use greentic_session::redis_store::RedisSessionStore;
-
-    let url = match std::env::var("REDIS_URL") {
-        Ok(url) => url,
-        Err(_) => {
-            println!("Skipping Redis demo - REDIS_URL not set");
-            return Ok(());
-        }
-    };
-
-    let client = redis::Client::open(url).map_err(redis_unavailable)?;
-    let namespace_id = Uuid::new_v4();
-    let namespace = format!("greentic:session:example:{namespace_id}");
-    let store = RedisSessionStore::with_namespace(client, namespace);
-
-    let key_id = Uuid::new_v4();
-    let key = SessionKey(format!("redis-demo-{key_id}"));
-    let session = build_session(key.clone(), "tenant-demo");
-
-    let cas = store.put(session.clone())?;
-    println!("Redis session stored with CAS {cas:?}");
-
-    if let Some((fetched, fetched_cas)) = store.get(&key)? {
-        let mut updated = fetched;
-        updated.cursor.outbox_seq += 1;
-        match store.update_cas(updated, fetched_cas)? {
-            Ok(next) => println!("Redis CAS update -> {next:?}"),
-            Err(conflict) => println!("Redis CAS conflict -> {conflict:?}"),
-        }
-    }
-
-    store.touch(&key, Some(90))?;
-    println!("Redis TTL refreshed");
-    store.delete(&key)?;
-    println!("Redis session removed");
-    Ok(())
-}
-
-#[cfg(not(feature = "redis"))]
-fn run_redis_demo() -> GResult<()> {
-    println!("Redis feature disabled; skipping Redis demo");
     Ok(())
 }
 
 fn main() -> GResult<()> {
-    run_inmemory_demo()?;
-    run_redis_demo()?;
-    Ok(())
+    run_inmemory_demo()
 }
 
-#[cfg(feature = "redis")]
+#[allow(dead_code)]
 fn redis_unavailable(err: redis::RedisError) -> GreenticError {
     GreenticError::new(ErrorCode::Unavailable, err.to_string())
 }
