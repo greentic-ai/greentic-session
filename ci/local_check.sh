@@ -2,13 +2,13 @@
 set -euo pipefail
 
 # Usage:
-#   LOCAL_CHECK_ONLINE=1 LOCAL_CHECK_STRICT=1 LOCAL_CHECK_VERBOSE=1 ci/local_check.sh
-# Defaults: offline, non-strict, minimal logging.
+#   LOCAL_CHECK_ONLINE=0 LOCAL_CHECK_STRICT=1 LOCAL_CHECK_VERBOSE=1 ci/local_check.sh
+# Defaults: online, non-strict, minimal logging.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-ONLINE="${LOCAL_CHECK_ONLINE:-0}"
+ONLINE="${LOCAL_CHECK_ONLINE:-1}"
 STRICT="${LOCAL_CHECK_STRICT:-0}"
 VERBOSE="${LOCAL_CHECK_VERBOSE:-0}"
 
