@@ -168,7 +168,11 @@ publish_parity() {
   ensure_tool cargo || return $?
   ensure_tool jq || return $?
 
-  mapfile -t crates < <(bash -c 'set -euo pipefail; source "$1"; list_crates' _ "$script_path")
+  local crates=()
+  while IFS= read -r entry; do
+    crates+=("$entry")
+  done < <(bash -c 'set -euo pipefail; source "$1"; list_crates' _ "$script_path")
+
   if [[ "${#crates[@]}" -eq 0 ]]; then
     skip_step "no crates detected"
   fi

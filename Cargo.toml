@@ -1,6 +1,6 @@
 [package]
 name = "greentic-session"
-version = "0.3.2"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -18,7 +18,7 @@ schema = ["dep:schemars"]
 interfaces = ["dep:greentic-interfaces"]
 
 [dependencies]
-greentic-types = "^0.3"
+greentic-types = "^0.4"
 greentic-interfaces = { version = "^0.4", optional = true }
 
 serde_json = "1"
