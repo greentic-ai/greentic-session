@@ -1,32 +1,47 @@
-use crate::error::{invalid_argument, not_found, redis_error, serde_error};
+use crate::error::{SessionResult, invalid_argument, not_found, redis_error, serde_error};
 use crate::store::SessionStore;
-use greentic_types::{GResult, SessionData, SessionKey, TenantCtx, UserId};
-use redis::{Commands, Connection};
+use greentic_types::{SessionData, SessionKey, TenantCtx, UserId};
+use redis::{Client, Commands, Connection};
 use uuid::Uuid;
 
 const DEFAULT_NAMESPACE: &str = "greentic:session";
 
 /// Redis-backed session store that mirrors the in-memory semantics.
+///
+/// Constructors accept connection URLs or configuration strings only; no Redis
+/// client types appear in the public API.
 pub struct RedisSessionStore {
-    client: redis::Client,
+    client: Client,
     namespace: String,
 }
 
 impl RedisSessionStore {
-    /// Creates a store using the default namespace prefix.
-    pub fn new(client: redis::Client) -> Self {
-        Self::with_namespace(client, DEFAULT_NAMESPACE)
+    /// Creates a store using a Redis URL and the default namespace prefix.
+    pub fn from_url(url: impl AsRef<str>) -> SessionResult<Self> {
+        let client = Client::open(url.as_ref()).map_err(redis_error)?;
+        Ok(Self::from_client_with_namespace(
+            client,
+            DEFAULT_NAMESPACE.to_string(),
+        ))
     }
 
-    /// Creates a store with a custom namespace prefix.
-    pub fn with_namespace(client: redis::Client, namespace: impl Into<String>) -> Self {
+    /// Creates a store using a Redis URL and a custom namespace prefix.
+    pub fn from_url_with_namespace(
+        url: impl AsRef<str>,
+        namespace: impl Into<String>,
+    ) -> SessionResult<Self> {
+        let client = Client::open(url.as_ref()).map_err(redis_error)?;
+        Ok(Self::from_client_with_namespace(client, namespace.into()))
+    }
+
+    pub(crate) fn from_client_with_namespace(client: Client, namespace: impl Into<String>) -> Self {
         Self {
             client,
             namespace: namespace.into(),
         }
     }
 
-    fn conn(&self) -> GResult<Connection> {
+    fn conn(&self) -> SessionResult<Connection> {
         self.client.get_connection().map_err(redis_error)
     }
 
@@ -51,7 +66,7 @@ impl RedisSessionStore {
         )
     }
 
-    fn ensure_alignment(ctx: &TenantCtx, data: &SessionData) -> GResult<()> {
+    fn ensure_alignment(ctx: &TenantCtx, data: &SessionData) -> SessionResult<()> {
         if ctx.env != data.tenant_ctx.env || ctx.tenant_id != data.tenant_ctx.tenant_id {
             return Err(invalid_argument(
                 "session data tenant context does not match provided TenantCtx",
@@ -60,11 +75,11 @@ impl RedisSessionStore {
         Ok(())
     }
 
-    fn serialize(data: &SessionData) -> GResult<String> {
+    fn serialize(data: &SessionData) -> SessionResult<String> {
         serde_json::to_string(data).map_err(serde_error)
     }
 
-    fn deserialize(payload: String) -> GResult<SessionData> {
+    fn deserialize(payload: String) -> SessionResult<SessionData> {
         serde_json::from_str(&payload).map_err(serde_error)
     }
 
@@ -95,7 +110,7 @@ impl RedisSessionStore {
         ctx_hint: Option<&TenantCtx>,
         data: &SessionData,
         key: &SessionKey,
-    ) -> GResult<()> {
+    ) -> SessionResult<()> {
         if let Some((ctx, user)) = Self::mapping_sources(ctx_hint, data) {
             let lookup_key = self.user_lookup_key(ctx, &user);
             conn.set::<_, _, ()>(lookup_key, key.as_str())
@@ -109,7 +124,7 @@ impl RedisSessionStore {
         conn: &mut Connection,
         data: &SessionData,
         key: &SessionKey,
-    ) -> GResult<()> {
+    ) -> SessionResult<()> {
         if let Some((ctx, user)) = Self::mapping_sources(None, data) {
             let lookup_key = self.user_lookup_key(ctx, &user);
             let stored: Option<String> = conn.get(&lookup_key).map_err(redis_error)?;
@@ -126,7 +141,7 @@ impl RedisSessionStore {
 }
 
 impl SessionStore for RedisSessionStore {
-    fn create_session(&self, ctx: &TenantCtx, data: SessionData) -> GResult<SessionKey> {
+    fn create_session(&self, ctx: &TenantCtx, data: SessionData) -> SessionResult<SessionKey> {
         Self::ensure_alignment(ctx, &data)?;
         let key = SessionKey::new(Uuid::new_v4().to_string());
         let payload = Self::serialize(&data)?;
@@ -137,13 +152,13 @@ impl SessionStore for RedisSessionStore {
         Ok(key)
     }
 
-    fn get_session(&self, key: &SessionKey) -> GResult<Option<SessionData>> {
+    fn get_session(&self, key: &SessionKey) -> SessionResult<Option<SessionData>> {
         let mut conn = self.conn()?;
         let payload: Option<String> = conn.get(self.session_entry_key(key)).map_err(redis_error)?;
         payload.map(Self::deserialize).transpose()
     }
 
-    fn update_session(&self, key: &SessionKey, data: SessionData) -> GResult<()> {
+    fn update_session(&self, key: &SessionKey, data: SessionData) -> SessionResult<()> {
         let mut conn = self.conn()?;
         let entry_key = self.session_entry_key(key);
         let existing: Option<String> = conn.get(&entry_key).map_err(redis_error)?;
@@ -158,7 +173,7 @@ impl SessionStore for RedisSessionStore {
         self.store_user_mapping(&mut conn, None, &data, key)
     }
 
-    fn remove_session(&self, key: &SessionKey) -> GResult<()> {
+    fn remove_session(&self, key: &SessionKey) -> SessionResult<()> {
         let mut conn = self.conn()?;
         let entry_key = self.session_entry_key(key);
         let existing: Option<String> = conn.get(&entry_key).map_err(redis_error)?;
@@ -174,7 +189,7 @@ impl SessionStore for RedisSessionStore {
         &self,
         ctx: &TenantCtx,
         user: &UserId,
-    ) -> GResult<Option<(SessionKey, SessionData)>> {
+    ) -> SessionResult<Option<(SessionKey, SessionData)>> {
         let mut conn = self.conn()?;
         let lookup_key = self.user_lookup_key(ctx, user);
         let stored: Option<String> = conn.get(&lookup_key).map_err(redis_error)?;

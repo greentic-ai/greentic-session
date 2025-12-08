@@ -1,9 +1,5 @@
-use greentic_session::error::{ErrorCode, GreenticError};
-use greentic_session::inmemory::InMemorySessionStore;
-use greentic_session::store::SessionStore;
-use greentic_types::{
-    EnvId, FlowId, GResult, SessionCursor, SessionData, TenantCtx, TenantId, UserId,
-};
+use greentic_session::{SessionBackendConfig, SessionResult, create_session_store};
+use greentic_types::{EnvId, FlowId, SessionCursor, SessionData, TenantCtx, TenantId, UserId};
 
 fn build_ctx(user: &str) -> TenantCtx {
     let env = EnvId::try_from("dev").expect("env");
@@ -21,9 +17,9 @@ fn build_session(ctx: &TenantCtx, cursor: &str, context_json: &str) -> SessionDa
     }
 }
 
-fn run_inmemory_demo() -> GResult<()> {
+fn run_inmemory_demo() -> SessionResult<()> {
     println!("== In-memory session demo ==");
-    let store = InMemorySessionStore::new();
+    let store = create_session_store(SessionBackendConfig::InMemory)?;
     let ctx = build_ctx("user-123");
     let session = build_session(&ctx, "node.start", "{\"step\":1}");
 
@@ -50,11 +46,6 @@ fn run_inmemory_demo() -> GResult<()> {
     Ok(())
 }
 
-fn main() -> GResult<()> {
+fn main() -> SessionResult<()> {
     run_inmemory_demo()
-}
-
-#[allow(dead_code)]
-fn redis_unavailable(err: redis::RedisError) -> GreenticError {
-    GreenticError::new(ErrorCode::Unavailable, err.to_string())
 }

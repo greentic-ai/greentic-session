@@ -12,7 +12,8 @@ resume exactly where it left off.
   storing or resuming a flow.
 - **Pluggable stores** – The `SessionStore` trait exposes a compact CRUD surface
   (`create_session`, `get_session`, `update_session`, `remove_session`, `find_by_user`). There is a
-  thread-safe in-memory implementation plus a Redis implementation for multi-process deployments.
+  thread-safe in-memory implementation plus a Redis implementation for multi-process deployments,
+  both selectable via a Redis-free factory.
 - **User routing** – Each store maintains a secondary map from `(env, tenant, team, user)` to a
   `SessionKey` so inbound activities can be routed to the correct paused flow without the caller
   needing to supply the opaque session identifier.
@@ -22,19 +23,19 @@ resume exactly where it left off.
 ## SessionStore API
 
 ```rust
-use greentic_session::{SessionStore, SessionData};
+use greentic_session::{SessionData, SessionResult, SessionStore};
 use greentic_types::{SessionCursor, TenantCtx};
 
 pub trait SessionStore {
-    fn create_session(&self, ctx: &TenantCtx, data: SessionData) -> GResult<SessionKey>;
-    fn get_session(&self, key: &SessionKey) -> GResult<Option<SessionData>>;
-    fn update_session(&self, key: &SessionKey, data: SessionData) -> GResult<()>;
-    fn remove_session(&self, key: &SessionKey) -> GResult<()>;
+    fn create_session(&self, ctx: &TenantCtx, data: SessionData) -> SessionResult<SessionKey>;
+    fn get_session(&self, key: &SessionKey) -> SessionResult<Option<SessionData>>;
+    fn update_session(&self, key: &SessionKey, data: SessionData) -> SessionResult<()>;
+    fn remove_session(&self, key: &SessionKey) -> SessionResult<()>;
     fn find_by_user(
         &self,
         ctx: &TenantCtx,
         user: &UserId,
-    ) -> GResult<Option<(SessionKey, SessionData)>>;
+    ) -> SessionResult<Option<(SessionKey, SessionData)>>;
 }
 ```
 
@@ -45,12 +46,11 @@ context it previously saved. When `find_by_user` returns a result, the runner ca
 ## Quickstart
 
 ```rust
-use greentic_session::inmemory::InMemorySessionStore;
-use greentic_session::SessionStore;
+use greentic_session::{create_session_store, SessionBackendConfig, SessionResult, SessionStore};
 use greentic_types::{EnvId, FlowId, SessionCursor, SessionData, TenantCtx, TenantId, UserId};
 
-fn demo() -> greentic_types::GResult<()> {
-    let store = InMemorySessionStore::new();
+fn demo() -> SessionResult<()> {
+    let store = create_session_store(SessionBackendConfig::InMemory)?;
     let env = EnvId::try_from("dev")?;
     let tenant = TenantId::try_from("tenant-42")?;
     let user = UserId::try_from("user-7")?;
@@ -59,7 +59,7 @@ fn demo() -> greentic_types::GResult<()> {
     let snapshot = SessionData {
         tenant_ctx: ctx.clone(),
         flow_id: FlowId::try_from("support.flow")?,
-        cursor: SessionCursor::new("node.wait_input"),
+        cursor: SessionCursor::new("node.wait_input".to_string()),
         context_json: "{\"ticket\":123}".into(),
     };
 
@@ -78,6 +78,17 @@ fn demo() -> greentic_types::GResult<()> {
 Run the example with `cargo run --example quickstart` to see the same flow end-to-end.
 
 ## Choosing a backend
+
+Construct a store with the Redis-free configuration enum (no Redis types in the public API and no
+downstream `redis` dependency):
+
+```rust
+use greentic_session::{create_session_store, SessionBackendConfig};
+
+let store = create_session_store(SessionBackendConfig::RedisUrl(
+    "redis://127.0.0.1/",
+))?;
+```
 
 | Feature flag combo | Backend availability | Suggested usage |
 | --- | --- | --- |
@@ -109,3 +120,5 @@ cargo test --all-features
 
 Redis tests honor the `REDIS_URL` environment variable. If unset, the Redis-specific tests are
 skipped automatically.
+
+Toolchain: Rust 1.89.0 (tracked via `rust-toolchain.toml` and CI workflows).

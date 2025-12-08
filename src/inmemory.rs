@@ -1,8 +1,7 @@
+use crate::error::SessionResult;
 use crate::error::{invalid_argument, not_found};
 use crate::store::SessionStore;
-use greentic_types::{
-    EnvId, GResult, SessionData, SessionKey, TeamId, TenantCtx, TenantId, UserId,
-};
+use greentic_types::{EnvId, SessionData, SessionKey, TeamId, TenantCtx, TenantId, UserId};
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -32,7 +31,7 @@ impl InMemorySessionStore {
         SessionKey::new(Uuid::new_v4().to_string())
     }
 
-    fn ensure_alignment(ctx: &TenantCtx, data: &SessionData) -> GResult<()> {
+    fn ensure_alignment(ctx: &TenantCtx, data: &SessionData) -> SessionResult<()> {
         if ctx.env != data.tenant_ctx.env || ctx.tenant_id != data.tenant_ctx.tenant_id {
             return Err(invalid_argument(
                 "session data tenant context does not match provided TenantCtx",
@@ -83,7 +82,7 @@ impl InMemorySessionStore {
 }
 
 impl SessionStore for InMemorySessionStore {
-    fn create_session(&self, ctx: &TenantCtx, data: SessionData) -> GResult<SessionKey> {
+    fn create_session(&self, ctx: &TenantCtx, data: SessionData) -> SessionResult<SessionKey> {
         Self::ensure_alignment(ctx, &data)?;
         let key = Self::next_key();
         self.sessions.write().insert(key.clone(), data.clone());
@@ -91,11 +90,11 @@ impl SessionStore for InMemorySessionStore {
         Ok(key)
     }
 
-    fn get_session(&self, key: &SessionKey) -> GResult<Option<SessionData>> {
+    fn get_session(&self, key: &SessionKey) -> SessionResult<Option<SessionData>> {
         Ok(self.sessions.read().get(key).cloned())
     }
 
-    fn update_session(&self, key: &SessionKey, data: SessionData) -> GResult<()> {
+    fn update_session(&self, key: &SessionKey, data: SessionData) -> SessionResult<()> {
         let previous = self.sessions.write().insert(key.clone(), data.clone());
         let Some(old) = previous else {
             return Err(not_found(key));
@@ -105,7 +104,7 @@ impl SessionStore for InMemorySessionStore {
         Ok(())
     }
 
-    fn remove_session(&self, key: &SessionKey) -> GResult<()> {
+    fn remove_session(&self, key: &SessionKey) -> SessionResult<()> {
         if let Some(old) = self.sessions.write().remove(key) {
             self.purge_user_mapping(&old, key);
             Ok(())
@@ -118,7 +117,7 @@ impl SessionStore for InMemorySessionStore {
         &self,
         ctx: &TenantCtx,
         user: &UserId,
-    ) -> GResult<Option<(SessionKey, SessionData)>> {
+    ) -> SessionResult<Option<(SessionKey, SessionData)>> {
         let lookup = UserLookupKey::from_ctx(ctx, user);
         if let Some(stored_key) = self.user_index.read().get(&lookup).cloned() {
             if let Some(data) = self.sessions.read().get(&stored_key).cloned() {
