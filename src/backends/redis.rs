@@ -45,6 +45,44 @@ impl RedisSessionStore {
         self.client.get_connection().map_err(redis_error)
     }
 
+    fn normalize_team(ctx: &TenantCtx) -> Option<&greentic_types::TeamId> {
+        ctx.team_id.as_ref().or(ctx.team.as_ref())
+    }
+
+    fn normalize_user(ctx: &TenantCtx) -> Option<&UserId> {
+        ctx.user_id.as_ref().or(ctx.user.as_ref())
+    }
+
+    fn ctx_mismatch(
+        expected: &TenantCtx,
+        provided: &TenantCtx,
+        reason: &str,
+    ) -> crate::error::GreenticError {
+        let expected_team = Self::normalize_team(expected)
+            .map(|t| t.as_str())
+            .unwrap_or("-");
+        let provided_team = Self::normalize_team(provided)
+            .map(|t| t.as_str())
+            .unwrap_or("-");
+        let expected_user = Self::normalize_user(expected)
+            .map(|u| u.as_str())
+            .unwrap_or("-");
+        let provided_user = Self::normalize_user(provided)
+            .map(|u| u.as_str())
+            .unwrap_or("-");
+        invalid_argument(format!(
+            "tenant context mismatch ({reason}): expected env={}, tenant={}, team={}, user={}, got env={}, tenant={}, team={}, user={}",
+            expected.env.as_str(),
+            expected.tenant_id.as_str(),
+            expected_team,
+            expected_user,
+            provided.env.as_str(),
+            provided.tenant_id.as_str(),
+            provided_team,
+            provided_user
+        ))
+    }
+
     fn session_entry_key(&self, key: &SessionKey) -> String {
         format!("{}:session:{}", self.namespace, key.as_str())
     }
@@ -67,10 +105,67 @@ impl RedisSessionStore {
     }
 
     fn ensure_alignment(ctx: &TenantCtx, data: &SessionData) -> SessionResult<()> {
-        if ctx.env != data.tenant_ctx.env || ctx.tenant_id != data.tenant_ctx.tenant_id {
-            return Err(invalid_argument(
-                "session data tenant context does not match provided TenantCtx",
+        let stored = &data.tenant_ctx;
+        if ctx.env != stored.env || ctx.tenant_id != stored.tenant_id {
+            return Err(Self::ctx_mismatch(stored, ctx, "env/tenant must match"));
+        }
+        if Self::normalize_team(ctx) != Self::normalize_team(stored) {
+            return Err(Self::ctx_mismatch(stored, ctx, "team must match"));
+        }
+        if let Some(stored_user) = Self::normalize_user(stored) {
+            let Some(provided_user) = Self::normalize_user(ctx) else {
+                return Err(Self::ctx_mismatch(
+                    stored,
+                    ctx,
+                    "user required by session but missing in caller context",
+                ));
+            };
+            if stored_user != provided_user {
+                return Err(Self::ctx_mismatch(
+                    stored,
+                    ctx,
+                    "user must match stored session",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_ctx_preserved(existing: &TenantCtx, candidate: &TenantCtx) -> SessionResult<()> {
+        if existing.env != candidate.env || existing.tenant_id != candidate.tenant_id {
+            return Err(Self::ctx_mismatch(
+                existing,
+                candidate,
+                "env/tenant cannot change for an existing session",
             ));
+        }
+        if Self::normalize_team(existing) != Self::normalize_team(candidate) {
+            return Err(Self::ctx_mismatch(
+                existing,
+                candidate,
+                "team cannot change for an existing session",
+            ));
+        }
+        match (
+            Self::normalize_user(existing),
+            Self::normalize_user(candidate),
+        ) {
+            (Some(a), Some(b)) if a == b => {}
+            (Some(_), Some(_)) | (Some(_), None) => {
+                return Err(Self::ctx_mismatch(
+                    existing,
+                    candidate,
+                    "user cannot change for an existing session",
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(Self::ctx_mismatch(
+                    existing,
+                    candidate,
+                    "user cannot be introduced when none was stored",
+                ));
+            }
+            (None, None) => {}
         }
         Ok(())
     }
@@ -166,6 +261,7 @@ impl SessionStore for RedisSessionStore {
             return Err(not_found(key));
         };
         let previous = Self::deserialize(existing_payload)?;
+        Self::ensure_ctx_preserved(&previous.tenant_ctx, &data.tenant_ctx)?;
         let payload = Self::serialize(&data)?;
         conn.set::<_, _, ()>(&entry_key, payload)
             .map_err(redis_error)?;
@@ -198,7 +294,24 @@ impl SessionStore for RedisSessionStore {
         };
         let session_key = SessionKey::new(raw_key);
         match self.get_session(&session_key)? {
-            Some(data) => Ok(Some((session_key, data))),
+            Some(data) => {
+                let stored_ctx = &data.tenant_ctx;
+                if stored_ctx.env == ctx.env
+                    && stored_ctx.tenant_id == ctx.tenant_id
+                    && Self::normalize_team(stored_ctx) == Self::normalize_team(ctx)
+                {
+                    if let Some(stored_user) = Self::normalize_user(stored_ctx)
+                        && stored_user != user
+                    {
+                        let _: () = conn.del(&lookup_key).map_err(redis_error)?;
+                        return Ok(None);
+                    }
+                    Ok(Some((session_key, data)))
+                } else {
+                    let _: () = conn.del(&lookup_key).map_err(redis_error)?;
+                    Ok(None)
+                }
+            }
             None => {
                 let _: () = conn.del(&lookup_key).map_err(redis_error)?;
                 Ok(None)

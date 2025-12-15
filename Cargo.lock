@@ -130,6 +130,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "ciborium"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42e69ffd6f0917f5c029256a24d0161db17cea3997d185db0d35926308770f0e"
+dependencies = [
+ "ciborium-io",
+ "ciborium-ll",
+ "serde",
+]
+
+[[package]]
+name = "ciborium-io"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05afea1e0a06c9be33d539b876f1ce3692f4afea2cb41f740e7743225ed1c757"
+
+[[package]]
+name = "ciborium-ll"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57663b653d948a338bfb3eeba9bb2fd5fcfaecb9e199e87e1eda4d9e8b240fd9"
+dependencies = [
+ "ciborium-io",
+ "half",
+]
+
+[[package]]
 name = "cobs"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -303,6 +330,12 @@ checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
 dependencies = [
  "cfg-if",
 ]
+
+[[package]]
+name = "crunchy"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "crypto-common"
@@ -503,9 +536,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-interfaces"
-version = "0.4.54"
+version = "0.4.61"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13cf4335193b8fc9fc68aad3328f906cae589bda7b2fee9ca3e91b2fe0e2de45"
+checksum = "1a002b7c3ca5a1e51b582ecf4da392975eae28cc012ac39c888db459ef065322"
 dependencies = [
  "anyhow",
  "greentic-types",
@@ -520,7 +553,7 @@ dependencies = [
 
 [[package]]
 name = "greentic-session"
-version = "0.4.1"
+version = "0.4.3"
 dependencies = [
  "greentic-interfaces",
  "greentic-types",
@@ -536,11 +569,12 @@ dependencies = [
 
 [[package]]
 name = "greentic-types"
-version = "0.4.13"
+version = "0.4.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bda032f384a300decec49cde8bdff585e7fabf1bb6e5ed16118be03bb9fed209"
+checksum = "98a324d43663718d5373f80a2853a042110f453a95c86b4e7ef61a0553b2c003"
 dependencies = [
  "chrono",
+ "ciborium",
  "fnv",
  "indexmap",
  "semver",
@@ -549,6 +583,17 @@ dependencies = [
  "serde_with",
  "thiserror",
  "time",
+]
+
+[[package]]
+name = "half"
+version = "2.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ea2d84b969582b4b1864a92dc5d27cd2b77b622a8d79306834f1be5ba20d84b"
+dependencies = [
+ "cfg-if",
+ "crunchy",
+ "zerocopy",
 ]
 
 [[package]]
@@ -627,9 +672,9 @@ checksum = "7aedcccd01fc5fe81e6b489c15b247b8b0690feb23304303a9e560f37efc560a"
 
 [[package]]
 name = "icu_properties"
-version = "2.1.1"
+version = "2.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e93fcd3157766c0c8da2f8cff6ce651a31f0810eaa1c51ec363ef790bbb5fb99"
+checksum = "020bfc02fe870ec3a66d93e677ccca0562506e5872c650f893269e08615d74ec"
 dependencies = [
  "icu_collections",
  "icu_locale_core",
@@ -641,9 +686,9 @@ dependencies = [
 
 [[package]]
 name = "icu_properties_data"
-version = "2.1.1"
+version = "2.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02845b3647bb045f1100ecd6480ff52f34c35f82d9880e029d329c21d1054899"
+checksum = "616c294cf8d725c6afcd8f55abc17c56464ef6211f9ed59cccffe534129c77af"
 
 [[package]]
 name = "icu_provider"
@@ -1038,9 +1083,9 @@ dependencies = [
 
 [[package]]
 name = "redis"
-version = "1.0.0"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47ba378d39b8053bffbfc2750220f5a24a06189b5129523d5db01618774e0239"
+checksum = "e2dc509b442812959ab125c74be2a930dd9b603038b6da9df9ec013aa23a4e9c"
 dependencies = [
  "arcstr",
  "combine",

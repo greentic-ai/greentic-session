@@ -2,6 +2,7 @@ pub use greentic_types::{ErrorCode, GreenticError};
 use greentic_types::{GResult, SessionKey};
 pub type SessionResult<T> = GResult<T>;
 
+#[cfg(feature = "redis")]
 pub(crate) fn serde_error(err: serde_json::Error) -> GreenticError {
     GreenticError::new(ErrorCode::Internal, err.to_string())
 }

@@ -92,14 +92,19 @@ let store = create_session_store(SessionBackendConfig::RedisUrl(
 
 | Feature flag combo | Backend availability | Suggested usage |
 | --- | --- | --- |
-| `default` (`redis`) | Redis + in-memory | Production runners |
-| `--no-default-features --features inmemory` | In-memory only | Tests, single-node dev |
+| `default` (no flags) | In-memory only | Tests, single-node dev |
+| `--features redis` | Redis + in-memory | Production runners |
 | `--all-features` | Redis + schema docs | CI / documentation generation |
 
 The Redis backend stores each `SessionData` blob as JSON under
 `greentic:session:session:{session_key}` and maintains user lookup keys at
 `greentic:session:user:{env}:{tenant}:{team}:{user}`. When a session is removed, the lookup entry is
 cleared so new activities fall back to creating a fresh session.
+
+Tenant context enforcement is strict: env, tenant, and team must always match between the caller’s
+`TenantCtx` and the stored `SessionData`, and a stored user (when present) must match the caller. If
+the stored user is absent, lookups may still be keyed by a caller-provided user without mutating the
+stored context.
 
 ## Deterministic Session Keys
 
