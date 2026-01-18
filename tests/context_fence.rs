@@ -1,6 +1,7 @@
-use greentic_session::{SessionBackendConfig, create_session_store};
+use greentic_session::{ReplyScope, SessionBackendConfig, create_session_store};
 use greentic_types::{
-    EnvId, ErrorCode, FlowId, SessionCursor, SessionData, TeamId, TenantCtx, TenantId, UserId,
+    EnvId, ErrorCode, FlowId, SessionCursor, SessionData, SessionKey, TeamId, TenantCtx, TenantId,
+    UserId,
 };
 
 fn ctx(team: &str, user: Option<&str>) -> TenantCtx {
@@ -21,8 +22,18 @@ fn data(ctx: &TenantCtx) -> SessionData {
     SessionData {
         tenant_ctx: ctx.clone(),
         flow_id: FlowId::try_from("flow.ctx").expect("flow id"),
+        pack_id: None,
         cursor: SessionCursor::new("node.start".to_string()),
         context_json: "{}".into(),
+    }
+}
+
+fn scope(provider: &str, conversation: &str) -> ReplyScope {
+    ReplyScope {
+        conversation: format!("{}:{}", provider, conversation),
+        thread: None,
+        reply_to: None,
+        correlation: None,
     }
 }
 
@@ -68,12 +79,22 @@ fn find_by_user_enforces_scope_and_user() {
     let store = create_session_store(SessionBackendConfig::InMemory)
         .expect("factory should build in-memory store");
     let base_ctx = ctx("team-a", Some("user-1"));
-    let key = store
-        .create_session(&base_ctx, data(&base_ctx))
-        .expect("create succeeds");
+    let user = base_ctx.user_id.as_ref().expect("user present");
+    let key = SessionKey::new("ctx-wait");
+    store
+        .register_wait(
+            &base_ctx,
+            user,
+            &scope("webhook", "conversation-1"),
+            &key,
+            data(&base_ctx),
+            None,
+        )
+        .expect("wait registered");
 
     // Wrong team should not retrieve the session.
     let other_team_ctx = ctx("team-b", Some("user-1"));
+    #[allow(deprecated)]
     let found = store
         .find_by_user(
             &other_team_ctx,
@@ -85,15 +106,17 @@ fn find_by_user_enforces_scope_and_user() {
 
     // Wrong user should not retrieve the session.
     let other_user = UserId::try_from("user-2").expect("user id");
-    assert!(
+    let none_for_other = {
+        #[allow(deprecated)]
         store
             .find_by_user(&base_ctx, &other_user)
             .expect("lookup")
-            .is_none(),
-        "lookup should respect user binding"
-    );
+            .is_none()
+    };
+    assert!(none_for_other, "lookup should respect user binding");
 
     // Happy path still returns the session.
+    #[allow(deprecated)]
     let found = store
         .find_by_user(&base_ctx, base_ctx.user_id.as_ref().expect("user present"))
         .expect("lookup")

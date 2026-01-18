@@ -16,6 +16,7 @@ fn factory_returns_inmemory_store() {
     let data = SessionData {
         tenant_ctx: ctx.clone(),
         flow_id: FlowId::try_from("flow.demo").expect("flow"),
+        pack_id: None,
         cursor: SessionCursor::new("node.start".to_string()),
         context_json: "{}".into(),
     };

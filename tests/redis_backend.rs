@@ -1,13 +1,24 @@
 #![cfg(feature = "redis")]
 
-use greentic_session::{SessionBackendConfig, create_session_store};
-use greentic_types::{EnvId, FlowId, SessionCursor, SessionData, TenantCtx, TenantId, UserId};
+use greentic_session::{ReplyScope, SessionBackendConfig, create_session_store};
+use greentic_types::{
+    EnvId, FlowId, SessionCursor, SessionData, SessionKey, TenantCtx, TenantId, UserId,
+};
 
 fn ctx(user: &str) -> TenantCtx {
     let env = EnvId::try_from("dev").expect("env id");
     let tenant = TenantId::try_from("tenant-redis").expect("tenant id");
     let user_id = UserId::try_from(user).expect("user id");
     TenantCtx::new(env, tenant).with_user(Some(user_id))
+}
+
+fn scope(provider: &str, conversation: &str) -> ReplyScope {
+    ReplyScope {
+        conversation: format!("{}:{}", provider, conversation),
+        thread: None,
+        reply_to: None,
+        correlation: None,
+    }
 }
 
 #[test]
@@ -26,13 +37,23 @@ fn redis_backend_crud_when_url_provided() {
     let data = SessionData {
         tenant_ctx: ctx.clone(),
         flow_id: FlowId::try_from("flow.redis").expect("flow"),
+        pack_id: None,
         cursor: SessionCursor::new("node.redis.start".to_string()),
         context_json: "{\"step\":1}".into(),
     };
+    let user = ctx.user_id.as_ref().expect("user present");
 
-    let key = store
-        .create_session(&ctx, data.clone())
-        .expect("create succeeds");
+    let key = SessionKey::new("redis-wait");
+    store
+        .register_wait(
+            &ctx,
+            user,
+            &scope("redis", "conversation-1"),
+            &key,
+            data.clone(),
+            None,
+        )
+        .expect("register wait");
     let fetched = store
         .get_session(&key)
         .expect("get succeeds")
@@ -53,8 +74,9 @@ fn redis_backend_crud_when_url_provided() {
         .expect("present");
     assert_eq!(refreshed.cursor.node_pointer, "node.redis.next");
 
+    #[allow(deprecated)]
     let found = store
-        .find_by_user(&ctx, ctx.user_id.as_ref().unwrap())
+        .find_by_user(&ctx, user)
         .expect("lookup")
         .expect("user mapping");
     assert_eq!(found.0, key);

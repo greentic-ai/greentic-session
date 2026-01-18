@@ -1,5 +1,7 @@
+use crate::ReplyScope;
 use crate::error::SessionResult;
 use greentic_types::{SessionData, SessionKey, TenantCtx, UserId};
+use std::time::Duration;
 
 /// Persistent session storage interface used by Greentic runtimes.
 ///
@@ -19,7 +21,42 @@ pub trait SessionStore: Send + Sync + 'static {
     /// Removes the session entry and clears any lookup indices.
     fn remove_session(&self, key: &SessionKey) -> SessionResult<()>;
 
+    /// Registers a paused flow wait, persisting the session and routing indices.
+    fn register_wait(
+        &self,
+        ctx: &TenantCtx,
+        user_id: &UserId,
+        scope: &ReplyScope,
+        session_key: &SessionKey,
+        data: SessionData,
+        ttl: Option<Duration>,
+    ) -> SessionResult<()>;
+
+    /// Finds a wait registered for the provided scope, if one exists.
+    fn find_wait_by_scope(
+        &self,
+        ctx: &TenantCtx,
+        user_id: &UserId,
+        scope: &ReplyScope,
+    ) -> SessionResult<Option<SessionKey>>;
+
+    /// Lists all waits registered for the provided user.
+    fn list_waits_for_user(
+        &self,
+        ctx: &TenantCtx,
+        user_id: &UserId,
+    ) -> SessionResult<Vec<SessionKey>>;
+
+    /// Clears a wait registration for the provided scope.
+    fn clear_wait(
+        &self,
+        ctx: &TenantCtx,
+        user_id: &UserId,
+        scope: &ReplyScope,
+    ) -> SessionResult<()>;
+
     /// Finds the active session bound to the specified tenant + user combination.
+    #[deprecated(note = "use find_wait_by_scope or list_waits_for_user instead")]
     fn find_by_user(
         &self,
         ctx: &TenantCtx,

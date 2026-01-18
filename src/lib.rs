@@ -8,7 +8,7 @@ pub mod mapping;
 pub mod store;
 
 pub use error::{ErrorCode, GreenticError, SessionResult};
-pub use greentic_types::{SessionData, SessionKey};
+pub use greentic_types::{ReplyScope, SessionData, SessionKey, WaitScope};
 pub use store::SessionStore;
 
 /// Configuration for selecting a session backend.

@@ -1,7 +1,9 @@
+use crate::ReplyScope;
 use crate::error::{SessionResult, invalid_argument, not_found, redis_error, serde_error};
 use crate::store::SessionStore;
 use greentic_types::{SessionData, SessionKey, TenantCtx, UserId};
 use redis::{Client, Commands, Connection};
+use std::time::Duration;
 use uuid::Uuid;
 
 const DEFAULT_NAMESPACE: &str = "greentic:session";
@@ -87,7 +89,7 @@ impl RedisSessionStore {
         format!("{}:session:{}", self.namespace, key.as_str())
     }
 
-    fn user_lookup_key(&self, ctx: &TenantCtx, user: &UserId) -> String {
+    fn user_waits_key(&self, ctx: &TenantCtx, user: &UserId) -> String {
         let team = ctx
             .team_id
             .as_ref()
@@ -95,12 +97,30 @@ impl RedisSessionStore {
             .map(|v| v.as_str())
             .unwrap_or("-");
         format!(
-            "{}:user:{}:{}:{}:{}",
+            "{}:waits:user:{}:{}:{}:{}",
             self.namespace,
             ctx.env.as_str(),
             ctx.tenant_id.as_str(),
             team,
             user.as_str()
+        )
+    }
+
+    fn scope_wait_key(&self, ctx: &TenantCtx, user: &UserId, scope: &ReplyScope) -> String {
+        let team = ctx
+            .team_id
+            .as_ref()
+            .or(ctx.team.as_ref())
+            .map(|v| v.as_str())
+            .unwrap_or("-");
+        format!(
+            "{}:waits:scope:{}:{}:{}:{}:{}",
+            self.namespace,
+            ctx.env.as_str(),
+            ctx.tenant_id.as_str(),
+            team,
+            user.as_str(),
+            scope.scope_hash()
         )
     }
 
@@ -170,6 +190,32 @@ impl RedisSessionStore {
         Ok(())
     }
 
+    fn ensure_user_matches(
+        ctx: &TenantCtx,
+        user: &UserId,
+        data: &SessionData,
+    ) -> SessionResult<()> {
+        if let Some(ctx_user) = Self::normalize_user(ctx) {
+            if ctx_user != user {
+                return Err(invalid_argument(
+                    "user must match tenant context when registering a wait",
+                ));
+            }
+        }
+        if let Some(stored_user) = Self::normalize_user(&data.tenant_ctx) {
+            if stored_user != user {
+                return Err(invalid_argument(
+                    "user must match session data when registering a wait",
+                ));
+            }
+        } else {
+            return Err(invalid_argument(
+                "user required by wait but missing in session data",
+            ));
+        }
+        Ok(())
+    }
+
     fn serialize(data: &SessionData) -> SessionResult<String> {
         serde_json::to_string(data).map_err(serde_error)
     }
@@ -178,58 +224,15 @@ impl RedisSessionStore {
         serde_json::from_str(&payload).map_err(serde_error)
     }
 
-    fn mapping_sources<'a>(
-        ctx_hint: Option<&'a TenantCtx>,
-        data: &'a SessionData,
-    ) -> Option<(&'a TenantCtx, UserId)> {
-        if let Some(user) = data
-            .tenant_ctx
-            .user_id
-            .clone()
-            .or_else(|| data.tenant_ctx.user.clone())
-        {
-            Some((&data.tenant_ctx, user))
-        } else {
-            ctx_hint.and_then(|ctx| {
-                ctx.user_id
-                    .clone()
-                    .or_else(|| ctx.user.clone())
-                    .map(|user| (ctx, user))
-            })
-        }
-    }
-
-    fn store_user_mapping(
-        &self,
-        conn: &mut Connection,
-        ctx_hint: Option<&TenantCtx>,
-        data: &SessionData,
-        key: &SessionKey,
-    ) -> SessionResult<()> {
-        if let Some((ctx, user)) = Self::mapping_sources(ctx_hint, data) {
-            let lookup_key = self.user_lookup_key(ctx, &user);
-            conn.set::<_, _, ()>(lookup_key, key.as_str())
-                .map_err(redis_error)?;
-        }
-        Ok(())
-    }
-
-    fn remove_user_mapping(
-        &self,
-        conn: &mut Connection,
-        data: &SessionData,
-        key: &SessionKey,
-    ) -> SessionResult<()> {
-        if let Some((ctx, user)) = Self::mapping_sources(None, data) {
-            let lookup_key = self.user_lookup_key(ctx, &user);
-            let stored: Option<String> = conn.get(&lookup_key).map_err(redis_error)?;
-            if stored
-                .as_deref()
-                .map(|value| value == key.as_str())
-                .unwrap_or(false)
-            {
-                let _: () = conn.del(lookup_key).map_err(redis_error)?;
-            }
+    fn apply_ttl(conn: &mut Connection, key: &str, ttl: Option<Duration>) -> SessionResult<()> {
+        if let Some(ttl) = ttl {
+            let ttl_ms = ttl.as_millis().max(1);
+            let ttl_ms = if ttl_ms > i64::MAX as u128 {
+                i64::MAX
+            } else {
+                ttl_ms as i64
+            };
+            conn.pexpire::<_, ()>(key, ttl_ms).map_err(redis_error)?;
         }
         Ok(())
     }
@@ -243,7 +246,6 @@ impl SessionStore for RedisSessionStore {
         let mut conn = self.conn()?;
         conn.set::<_, _, ()>(self.session_entry_key(&key), payload)
             .map_err(redis_error)?;
-        self.store_user_mapping(&mut conn, Some(ctx), &data, &key)?;
         Ok(key)
     }
 
@@ -264,9 +266,7 @@ impl SessionStore for RedisSessionStore {
         Self::ensure_ctx_preserved(&previous.tenant_ctx, &data.tenant_ctx)?;
         let payload = Self::serialize(&data)?;
         conn.set::<_, _, ()>(&entry_key, payload)
-            .map_err(redis_error)?;
-        self.remove_user_mapping(&mut conn, &previous, key)?;
-        self.store_user_mapping(&mut conn, None, &data, key)
+            .map_err(redis_error)
     }
 
     fn remove_session(&self, key: &SessionKey) -> SessionResult<()> {
@@ -278,17 +278,61 @@ impl SessionStore for RedisSessionStore {
         };
         let data = Self::deserialize(payload)?;
         let _: () = conn.del(entry_key).map_err(redis_error)?;
-        self.remove_user_mapping(&mut conn, &data, key)
+        if let Some(user) = Self::normalize_user(&data.tenant_ctx) {
+            let user_waits_key = self.user_waits_key(&data.tenant_ctx, user);
+            let _: () = conn
+                .srem::<_, _, ()>(user_waits_key, key.as_str())
+                .map_err(redis_error)?;
+        }
+        Ok(())
     }
 
-    fn find_by_user(
+    fn register_wait(
         &self,
         ctx: &TenantCtx,
-        user: &UserId,
-    ) -> SessionResult<Option<(SessionKey, SessionData)>> {
+        user_id: &UserId,
+        scope: &ReplyScope,
+        session_key: &SessionKey,
+        data: SessionData,
+        ttl: Option<Duration>,
+    ) -> SessionResult<()> {
+        Self::ensure_alignment(ctx, &data)?;
+        Self::ensure_user_matches(ctx, user_id, &data)?;
         let mut conn = self.conn()?;
-        let lookup_key = self.user_lookup_key(ctx, user);
-        let stored: Option<String> = conn.get(&lookup_key).map_err(redis_error)?;
+        let entry_key = self.session_entry_key(session_key);
+        let payload = Self::serialize(&data)?;
+        conn.set::<_, _, ()>(&entry_key, payload)
+            .map_err(redis_error)?;
+        Self::apply_ttl(&mut conn, &entry_key, ttl)?;
+
+        let user_waits_key = self.user_waits_key(ctx, user_id);
+        conn.sadd::<_, _, ()>(&user_waits_key, session_key.as_str())
+            .map_err(redis_error)?;
+
+        let scope_key = self.scope_wait_key(ctx, user_id, scope);
+        let previous: Option<String> = conn.get(&scope_key).map_err(redis_error)?;
+        conn.set::<_, _, ()>(&scope_key, session_key.as_str())
+            .map_err(redis_error)?;
+        Self::apply_ttl(&mut conn, &scope_key, ttl)?;
+        if let Some(previous) = previous {
+            if previous != session_key.as_str() {
+                let _: () = conn
+                    .srem::<_, _, ()>(&user_waits_key, previous)
+                    .map_err(redis_error)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn find_wait_by_scope(
+        &self,
+        ctx: &TenantCtx,
+        user_id: &UserId,
+        scope: &ReplyScope,
+    ) -> SessionResult<Option<SessionKey>> {
+        let mut conn = self.conn()?;
+        let scope_key = self.scope_wait_key(ctx, user_id, scope);
+        let stored: Option<String> = conn.get(&scope_key).map_err(redis_error)?;
         let Some(raw_key) = stored else {
             return Ok(None);
         };
@@ -301,21 +345,117 @@ impl SessionStore for RedisSessionStore {
                     && Self::normalize_team(stored_ctx) == Self::normalize_team(ctx)
                 {
                     if let Some(stored_user) = Self::normalize_user(stored_ctx)
-                        && stored_user != user
+                        && stored_user != user_id
                     {
-                        let _: () = conn.del(&lookup_key).map_err(redis_error)?;
+                        let _: () = conn.del(&scope_key).map_err(redis_error)?;
+                        let user_waits_key = self.user_waits_key(ctx, user_id);
+                        let _: () = conn
+                            .srem::<_, _, ()>(&user_waits_key, session_key.as_str())
+                            .map_err(redis_error)?;
                         return Ok(None);
                     }
-                    Ok(Some((session_key, data)))
+                    Ok(Some(session_key))
                 } else {
-                    let _: () = conn.del(&lookup_key).map_err(redis_error)?;
+                    let _: () = conn.del(&scope_key).map_err(redis_error)?;
+                    let user_waits_key = self.user_waits_key(ctx, user_id);
+                    let _: () = conn
+                        .srem::<_, _, ()>(&user_waits_key, session_key.as_str())
+                        .map_err(redis_error)?;
                     Ok(None)
                 }
             }
             None => {
-                let _: () = conn.del(&lookup_key).map_err(redis_error)?;
+                let _: () = conn.del(&scope_key).map_err(redis_error)?;
+                let user_waits_key = self.user_waits_key(ctx, user_id);
+                let _: () = conn
+                    .srem::<_, _, ()>(&user_waits_key, session_key.as_str())
+                    .map_err(redis_error)?;
                 Ok(None)
             }
+        }
+    }
+
+    fn list_waits_for_user(
+        &self,
+        ctx: &TenantCtx,
+        user_id: &UserId,
+    ) -> SessionResult<Vec<SessionKey>> {
+        let mut conn = self.conn()?;
+        let user_waits_key = self.user_waits_key(ctx, user_id);
+        let stored: Vec<String> = conn.smembers(&user_waits_key).map_err(redis_error)?;
+        let mut results = Vec::new();
+        for raw_key in stored {
+            let session_key = SessionKey::new(raw_key.clone());
+            match self.get_session(&session_key)? {
+                Some(data) => {
+                    let stored_ctx = &data.tenant_ctx;
+                    if stored_ctx.env == ctx.env
+                        && stored_ctx.tenant_id == ctx.tenant_id
+                        && Self::normalize_team(stored_ctx) == Self::normalize_team(ctx)
+                    {
+                        if let Some(stored_user) = Self::normalize_user(stored_ctx)
+                            && stored_user != user_id
+                        {
+                            let _: () = conn
+                                .srem::<_, _, ()>(&user_waits_key, raw_key)
+                                .map_err(redis_error)?;
+                            continue;
+                        }
+                        results.push(session_key);
+                    } else {
+                        let _: () = conn
+                            .srem::<_, _, ()>(&user_waits_key, raw_key)
+                            .map_err(redis_error)?;
+                    }
+                }
+                None => {
+                    let _: () = conn
+                        .srem::<_, _, ()>(&user_waits_key, raw_key)
+                        .map_err(redis_error)?;
+                }
+            }
+        }
+        Ok(results)
+    }
+
+    fn clear_wait(
+        &self,
+        ctx: &TenantCtx,
+        user_id: &UserId,
+        scope: &ReplyScope,
+    ) -> SessionResult<()> {
+        let mut conn = self.conn()?;
+        let scope_key = self.scope_wait_key(ctx, user_id, scope);
+        let stored: Option<String> = conn.get(&scope_key).map_err(redis_error)?;
+        if let Some(raw_key) = stored {
+            let session_key = SessionKey::new(raw_key.clone());
+            let entry_key = self.session_entry_key(&session_key);
+            let _: () = conn.del(&entry_key).map_err(redis_error)?;
+            let _: () = conn.del(&scope_key).map_err(redis_error)?;
+            let user_waits_key = self.user_waits_key(ctx, user_id);
+            let _: () = conn
+                .srem::<_, _, ()>(&user_waits_key, raw_key)
+                .map_err(redis_error)?;
+        }
+        Ok(())
+    }
+
+    fn find_by_user(
+        &self,
+        ctx: &TenantCtx,
+        user: &UserId,
+    ) -> SessionResult<Option<(SessionKey, SessionData)>> {
+        let waits = self.list_waits_for_user(ctx, user)?;
+        match waits.len() {
+            0 => Ok(None),
+            1 => {
+                let key = waits.into_iter().next().expect("single wait entry");
+                let data = self.get_session(&key)?.ok_or_else(|| not_found(&key))?;
+                Ok(Some((key, data)))
+            }
+            _ => Err(invalid_argument(
+                "multiple waits exist for user; use scope-based routing instead",
+            )),
         }
     }
 }
