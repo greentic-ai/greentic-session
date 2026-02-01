@@ -126,4 +126,4 @@ cargo test --all-features
 Redis tests honor the `REDIS_URL` environment variable. If unset, the Redis-specific tests are
 skipped automatically.
 
-Toolchain: Rust 1.89.0 (tracked via `rust-toolchain.toml` and CI workflows).
+Toolchain: Rust 1.90.0 (tracked via `rust-toolchain.toml` and CI workflows).
