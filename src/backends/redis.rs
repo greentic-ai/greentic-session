@@ -66,22 +66,26 @@ impl RedisSessionStore {
         let provided_team = Self::normalize_team(provided)
             .map(|t| t.as_str())
             .unwrap_or("-");
-        let expected_user = Self::normalize_user(expected)
-            .map(|u| u.as_str())
-            .unwrap_or("-");
-        let provided_user = Self::normalize_user(provided)
-            .map(|u| u.as_str())
-            .unwrap_or("-");
+        let expected_user_presence = if Self::normalize_user(expected).is_some() {
+            "present"
+        } else {
+            "missing"
+        };
+        let provided_user_presence = if Self::normalize_user(provided).is_some() {
+            "present"
+        } else {
+            "missing"
+        };
         invalid_argument(format!(
             "tenant context mismatch ({reason}): expected env={}, tenant={}, team={}, user={}, got env={}, tenant={}, team={}, user={}",
             expected.env.as_str(),
             expected.tenant_id.as_str(),
             expected_team,
-            expected_user,
+            expected_user_presence,
             provided.env.as_str(),
             provided.tenant_id.as_str(),
             provided_team,
-            provided_user
+            provided_user_presence
         ))
     }
 
